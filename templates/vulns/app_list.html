@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% load herald_tags %}
+{% block title %}Applications{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Applications</h1>
+  {% if user.is_admin %}<a class="btn btn-primary btn-sm" href="{% url 'app_create' %}"><i class="bi bi-plus-lg"></i> Add application</a>{% endif %}
+</div>
+
+{% if unregistered_count and user.can_view_all and params.status != "unregistered" %}
+<div class="alert alert-warning py-2 small">
+  <i class="bi bi-person-exclamation"></i> {{ unregistered_count }} App ID{{ unregistered_count|pluralize }} in the scan data {{ unregistered_count|pluralize:"is,are" }} not registered.
+  <a href="?status=unregistered">Show them</a>
+</div>
+{% endif %}
+
+<form method="get" class="card mb-3"><div class="card-body py-2">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-3"><label class="form-label small mb-0">Search</label>
+      <input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="App ID, name, owner, email, service, department"></div>
+    <div class="col-6 col-md-2"><label class="form-label small mb-0">Status</label>
+      <select name="status" class="form-select form-select-sm">{% for v, l in statuses %}<option value="{{ v }}" {% if params.status == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-1"><label class="form-label small mb-0">Severity</label>
+      <select name="severity" class="form-select form-select-sm"><option value="">Any</option>{% for s in severities %}<option {% if params.severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-1"><label class="form-label small mb-0">SLO</label>
+      <select name="slo" class="form-select form-select-sm"><option value="">Any</option><option value="past" {% if params.slo == "past" %}selected{% endif %}>Past SLO</option><option value="none" {% if params.slo == "none" %}selected{% endif %}>None past SLO</option></select></div>
+    <div class="col-6 col-md-1"><label class="form-label small mb-0">Notified</label>
+      <select name="notified" class="form-select form-select-sm"><option value="">Any</option><option value="yes" {% if params.notified == "yes" %}selected{% endif %}>Notified</option><option value="never" {% if params.notified == "never" %}selected{% endif %}>Never</option></select></div>
+    <div class="col-6 col-md-1"><label class="form-label small mb-0">Environment</label>
+      <select name="env" class="form-select form-select-sm"><option value="">All</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-1"><label class="form-label small mb-0">Exception</label>
+      <select name="exception" class="form-select form-select-sm"><option value="">All</option><option value="yes" {% if params.exception == "yes" %}selected{% endif %}>With exception</option><option value="no" {% if params.exception == "no" %}selected{% endif %}>Without</option></select></div>
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+    <div class="col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'app_list' %}">Reset</a></div>
+  </div>
+  {% if params.env or params.exception %}<div class="small text-muted mt-1">Environment / exception filters narrow which vulnerabilities are counted (shown as “counted of total open”).</div>{% endif %}
+</div></form>
+
+<form method="post" action="{% url 'app_notify_bulk' %}" id="bulk-form">{% csrf_token %}
+<input type="hidden" name="next" value="{{ request.get_full_path }}">
+<div class="card"><div class="card-body">
+  {% if user.is_admin %}
+  <div class="d-flex align-items-center gap-2 mb-2">
+    <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send notifications to the owners of the selected applications?')"><i class="bi bi-envelope"></i> Notify selected (<span id="bulk-count">0</span>)</button>
+    <span class="small text-muted">Only registered apps with an email can be selected.</span>
+  </div>
+  {% endif %}
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0">
+    <thead><tr>
+      {% if user.is_admin %}<th><input type="checkbox" class="form-check-input" id="check-all"></th>{% endif %}
+      <th>App ID</th><th>Name</th><th>Owner</th><th>Service / Department</th>
+      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th>Last notified</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for row in page %}
+      <tr>
+        {% if user.is_admin %}<td>{% if row.registered and row.has_email %}<input type="checkbox" class="form-check-input row-check" name="app_ids" value="{{ row.app_id }}">{% endif %}</td>{% endif %}
+        <td class="nowrap"><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
+        {% if row.registered %}
+          <td>{{ row.app.name|default:"—" }}</td>
+          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no email</span>{% endif %}</div></td>
+          <td class="small">{{ row.app.business_service|default:"" }}{% if row.app.department %}<div class="text-muted">{{ row.app.department }}</div>{% endif %}</td>
+        {% else %}
+          <td colspan="3"><span class="badge text-bg-warning">unregistered</span>
+            {% if user.is_admin %}<a class="btn btn-sm btn-outline-warning ms-2 py-0" href="{% url 'app_create' %}?app_id={{ row.app_id|urlencode }}"><i class="bi bi-person-plus"></i> Register owner</a>{% endif %}</td>
+        {% endif %}
+        <td class="text-end fw-semibold nowrap">{{ row.open }}{% if row.narrowed %} <span class="small text-muted fw-normal">of {{ row.total_open }}</span>{% endif %}</td>
+        <td class="nowrap"><span class="sev sev-critical">{{ row.critical }}</span> <span class="sev sev-high">{{ row.high }}</span> <span class="sev sev-medium">{{ row.medium }}</span> <span class="sev sev-low">{{ row.low }}</span></td>
+        <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
+        <td class="text-end {% if row.not_seen %}text-warning fw-semibold{% endif %}">{{ row.not_seen }}</td>
+        <td class="text-end text-success">{{ row.remediated }}</td>
+        <td class="small nowrap">{{ row.last_notified|date:"Y-m-d H:i"|default:"never" }}</td>
+        <td class="text-end nowrap">
+          {% if user.is_admin and row.registered %}
+            <button class="btn btn-sm btn-outline-secondary py-0" formaction="{% url 'app_notify' row.app_id %}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No email registered{% elif not row.open %}No open vulnerabilities{% else %}Send notification{% endif %}" onclick="return confirm('Send notification for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
+          {% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="12" class="text-muted">No applications match these filters.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+  const checks = () => document.querySelectorAll('.row-check');
+  const sync = () => {
+    const n = [...checks()].filter(c => c.checked).length;
+    const btn = document.getElementById('bulk-btn');
+    if (btn) { btn.disabled = n === 0; document.getElementById('bulk-count').textContent = n; }
+  };
+  document.querySelectorAll('.row-check').forEach(c => c.addEventListener('change', sync));
+  const all = document.getElementById('check-all');
+  if (all) all.addEventListener('change', () => { checks().forEach(c => c.checked = all.checked); sync(); });
+</script>
+{% endblock %}

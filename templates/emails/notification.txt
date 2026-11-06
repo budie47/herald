@@ -1,0 +1,16 @@
+{% autoescape off %}Hello {{ app.owner_name|default:"application owner" }},
+
+Herald has {{ total }} open container vulnerabilit{{ total|pluralize:"y,ies" }} for {{ app.app_id }}{% if app.name %} ({{ app.name }}){% endif %}.
+
+Severity summary
+{% for sev, n in severity_counts %}  {{ sev }}: {{ n }}
+{% endfor %}  Past SLO date: {{ past_slo }}
+
+{% if truncated %}The first {{ limit }} are listed below; {% endif %}All open vulnerabilities are in the attached CSV.
+
+{% for v in vulns %}- [{{ v.severity }}] {{ v.cve|default:"(no CVE)" }} in {{ v.package }} {{ v.current_version }} -> {{ v.recommended_version|default:"no fix" }} | {{ v.image|default:v.asset_id }} | {{ v.environment }} | SLO {{ v.slo_date|date:"Y-m-d"|default:"-" }}{% if v.slo_overdue %} (PAST SLO){% endif %}
+{% endfor %}
+View in Herald: {{ site_url }}/applications/{{ app.app_id|urlencode }}/
+
+— Herald
+{% endautoescape %}

@@ -1,0 +1,25 @@
+{% extends "settings/_base.html" %}
+{% block title %}Email settings{% endblock %}
+{% block settings %}
+<div class="row g-3">
+  <div class="col-lg-7"><div class="card"><div class="card-body">
+    <h2 class="h5">SMTP server</h2>
+    <p class="small">
+      {% if cfg.is_configured %}<span class="badge text-bg-success">configured</span>{% else %}<span class="badge text-bg-warning">not configured</span>{% endif %}
+      {% if cfg.has_password %}<span class="badge text-bg-secondary"><i class="bi bi-lock"></i> password stored</span>{% endif %}
+    </p>
+    <form method="post" autocomplete="off">{% csrf_token %}
+      {% include "_form_fields.html" %}
+      <button class="btn btn-primary">Save</button>
+    </form>
+  </div></div></div>
+  <div class="col-lg-5"><div class="card"><div class="card-body">
+    <h2 class="h5">Send test email</h2>
+    <p class="small text-muted">Uses the saved settings above.</p>
+    <form method="post" action="{% url 'settings_email_test' %}">{% csrf_token %}
+      {% with form=test_form %}{% include "_form_fields.html" %}{% endwith %}
+      <button class="btn btn-outline-primary"><i class="bi bi-send"></i> Send test email</button>
+    </form>
+  </div></div></div>
+</div>
+{% endblock %}

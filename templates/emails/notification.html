@@ -1,0 +1,37 @@
+{% load herald_tags %}<!doctype html>
+<html><body style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#212529">
+<div style="max-width:960px;margin:0 auto;background:#fff;border-radius:8px;padding:24px">
+  <h2 style="margin:0 0 4px">{{ app.app_id }}{% if app.name %} · {{ app.name }}{% endif %}</h2>
+  <p style="color:#6c757d;margin:0 0 16px">Open container vulnerabilities as of {{ sent_at|date:"Y-m-d H:i" }} UTC</p>
+  <p>Hello {{ app.owner_name|default:"application owner" }},</p>
+  <p>Herald has <strong>{{ total }}</strong> open container vulnerabilit{{ total|pluralize:"y,ies" }} for your application.</p>
+  <table cellpadding="0" cellspacing="8" style="margin:0 -8px 12px"><tr>
+    {% for sev, n in severity_counts %}
+    <td style="padding:10px 16px;border-radius:6px;color:#fff;text-align:center;background:{% if sev == 'Critical' %}#7b1fa2{% elif sev == 'High' %}#d32f2f{% elif sev == 'Medium' %}#f57c00{% else %}#1976d2{% endif %}">
+      <div style="font-size:22px;font-weight:bold">{{ n }}</div><div style="font-size:12px">{{ sev }}</div></td>
+    {% endfor %}
+    <td style="padding:10px 16px;border-radius:6px;text-align:center;border:2px solid #dc3545;color:#dc3545">
+      <div style="font-size:22px;font-weight:bold">{{ past_slo }}</div><div style="font-size:12px">Past SLO</div></td>
+  </tr></table>
+  <p style="color:#6c757d">{% if truncated %}The first {{ limit }} of {{ total }} are listed below. {% endif %}All open vulnerabilities are in the attached CSV.</p>
+  <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
+    <tr style="background:#212529;color:#fff;text-align:left">
+      <th>Severity</th><th>CVE</th><th>Package</th><th>Current &rarr; Recommended</th><th>Image / Asset</th><th>Env</th><th>Days open</th><th>SLO date</th>
+    </tr>
+    {% for v in vulns %}
+    <tr style="border-bottom:1px solid #dee2e6">
+      <td>{{ v.severity }}</td>
+      <td>{% if v.cve_url %}<a href="{{ v.cve_url }}">{{ v.cve }}</a>{% else %}{{ v.cve }}{% endif %}</td>
+      <td>{{ v.package }}</td>
+      <td>{{ v.current_version }} &rarr; {{ v.recommended_version|default:"no fix" }}</td>
+      <td>{{ v.image|default:v.asset_id }}</td>
+      <td>{{ v.environment }}</td>
+      <td style="text-align:right">{{ v.days_open }}</td>
+      <td style="white-space:nowrap;{% if v.slo_overdue %}color:#dc3545;font-weight:bold{% endif %}">{{ v.slo_date|date:"Y-m-d"|default:"—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p style="margin-top:20px"><a href="{{ site_url }}/applications/{{ app.app_id|urlencode }}/" style="background:#0d6efd;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;display:inline-block">View in Herald</a></p>
+  <p style="color:#6c757d;font-size:12px">Sent by Herald to {{ app.recipients|join:", " }}.</p>
+</div>
+</body></html>

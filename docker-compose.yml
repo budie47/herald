@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-herald}
+      POSTGRES_USER: ${POSTGRES_USER:-herald}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-herald}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-herald} -d ${POSTGRES_DB:-herald}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-change-me-in-production}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      HERALD_SITE_URL: ${HERALD_SITE_URL:-http://localhost:8000}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-herald}
+      POSTGRES_USER: ${POSTGRES_USER:-herald}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-herald}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-admin@herald.local}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-ChangeMe!2026}
+      # Pre-fills Settings > Email on first start only (points at the bundled Mailpit).
+      HERALD_SMTP_HOST: ${HERALD_SMTP_HOST:-mailpit}
+      HERALD_SMTP_PORT: ${HERALD_SMTP_PORT:-1025}
+      HERALD_SMTP_SECURITY: ${HERALD_SMTP_SECURITY:-none}
+      HERALD_SMTP_SENDER: ${HERALD_SMTP_SENDER:-herald@herald.local}
+    ports:
+      - "${HERALD_PORT:-8000}:8000"
+
+  # Development mail catcher: every email Herald sends shows up at http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+
+volumes:
+  pgdata:

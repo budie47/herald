@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% load herald_tags %}
+{% block title %}{{ app_id }}{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'app_list' %}">&larr; Applications</a>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ app_id }}{% if app.name %} <span class="text-muted fs-5">· {{ app.name }}</span>{% endif %}
+    {% if not app %}<span class="badge text-bg-warning fs-6 align-middle">unregistered</span>{% endif %}</h1>
+  {% if user.is_admin %}
+  <div class="d-flex gap-2">
+    {% if app %}
+      <form method="post" action="{% url 'app_notify' app_id %}">{% csrf_token %}
+        <button class="btn btn-primary btn-sm" {% if not app.has_email %}disabled title="No email registered"{% endif %} onclick="return confirm('Email {{ summary.open }} open vulnerabilities to {{ app.recipients|join:', ' }}?')"><i class="bi bi-envelope"></i> Send notification</button>
+      </form>
+      <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> Edit</a>
+      <a class="btn btn-outline-danger btn-sm" href="{% url 'app_delete' app_id %}"><i class="bi bi-trash"></i> Delete</a>
+    {% else %}
+      <a class="btn btn-warning btn-sm" href="{% url 'app_create' %}?app_id={{ app_id|urlencode }}"><i class="bi bi-person-plus"></i> Register owner</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Owner</h2>
+    {% if app %}
+    <dl class="row small mb-0">
+      <dt class="col-5">Owner</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
+      <dt class="col-5">Owner email</dt><dd class="col-7">{{ app.owner_email|default:"—" }}</dd>
+      <dt class="col-5">Extra emails</dt><dd class="col-7">{{ app.extra_email_list|join:", "|default:"—" }}</dd>
+      <dt class="col-5">Business service</dt><dd class="col-7">{{ app.business_service|default:"—" }}</dd>
+      <dt class="col-5">Department</dt><dd class="col-7">{{ app.department|default:"—" }}</dd>
+      {% if app.notes %}<dt class="col-5">Notes</dt><dd class="col-7">{{ app.notes|linebreaksbr }}</dd>{% endif %}
+    </dl>
+    {% else %}
+    <p class="small text-muted mb-0">This App ID appears in scan data but has no registered owner, so notifications can't be sent.</p>
+    {% endif %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Summary</h2>
+    <div class="d-flex gap-3 mb-2 flex-wrap">
+      <div><div class="stat">{{ summary.open }}</div><div class="small text-muted">open</div></div>
+      <div><div class="stat {% if summary.past_slo %}text-danger{% endif %}">{{ summary.past_slo }}</div><div class="small text-muted">past SLO</div></div>
+      <div><div class="stat text-success">{{ summary.remediated }}</div><div class="small text-muted">remediated</div></div>
+    </div>
+    <div class="mb-2">{% for sev, n in severity_counts %}<span class="sev {{ sev|sev_class }}">{{ n }} {{ sev }}</span> {% endfor %}</div>
+    <div class="small text-muted">Not seen: {{ summary.not_seen }} · Reopened: {{ summary.reopened }} · Exceptions: {{ summary.exceptions }}</div>
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Last 10 notifications</h2>
+    {% if notifications %}
+    <div class="timeline">
+      {% for n in notifications %}
+      <div class="timeline-item {% if n.status == 'failed' %}failed{% endif %}">
+        <div class="small fw-semibold">{{ n.sent_at|date:"Y-m-d H:i" }} UTC
+          {% if n.status == 'failed' %}<span class="badge text-bg-danger">failed</span>{% endif %}</div>
+        <div class="small">by {{ n.sent_by.email|default:"(deleted user)" }} · {{ n.vuln_count }} vulnerabilit{{ n.vuln_count|pluralize:"y,ies" }}{% if n.past_slo_count %} ({{ n.past_slo_count }} past SLO){% endif %}</div>
+        <div class="small text-muted text-truncate" title="{{ n.recipients }}">to {{ n.recipients }}</div>
+        {% if n.error %}<div class="small text-danger">{{ n.error|truncatechars:120 }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="small text-muted mb-0">Never notified.</p>{% endif %}
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <h2 class="h6 mb-0">Vulnerabilities</h2>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'app_export' app_id %}{% qs page=None %}"><i class="bi bi-download"></i> Export CSV</a>
+  </div>
+  <form method="get" class="row g-2 align-items-end mb-2">
+    <div class="col-md-3"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="CVE, package, version, image, asset, alert ID, cluster, namespace, RITM"></div>
+    <div class="col-6 col-md-2"><select name="status" class="form-select form-select-sm">{% for v, l in statuses %}<option value="{{ v }}" {% if params.status == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-1"><select name="severity" class="form-select form-select-sm"><option value="">Severity</option>{% for s in severities %}<option {% if params.severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-2"><select name="env" class="form-select form-select-sm"><option value="">All environments</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-md-1"><select name="slo" class="form-select form-select-sm"><option value="">SLO</option><option value="past" {% if params.slo == "past" %}selected{% endif %}>Past SLO</option><option value="within" {% if params.slo == "within" %}selected{% endif %}>Within SLO</option></select></div>
+    <div class="col-6 col-md-1"><select name="exception" class="form-select form-select-sm"><option value="">Exception</option><option value="yes" {% if params.exception == "yes" %}selected{% endif %}>Yes</option><option value="no" {% if params.exception == "no" %}selected{% endif %}>No</option></select></div>
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+    <div class="col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'app_detail' app_id %}">Reset</a></div>
+  </form>
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0 small">
+    <thead><tr>
+      <th>Status</th><th>Severity</th><th>CVE</th><th>Package</th><th>Image / Asset</th><th>Environment</th>
+      <th class="text-end">Days open</th><th>SLO date</th><th>Exception</th><th>RITM</th><th>Alert ID</th>
+    </tr></thead>
+    <tbody>
+    {% for v in page %}
+      {% vuln_status v cutoff as st %}
+      <tr>
+        <td><span class="badge {{ st|status_class }}">{{ st }}</span></td>
+        <td><span class="sev {{ v.severity|sev_class }}">{{ v.severity|default:"?" }}</span></td>
+        <td class="nowrap">{% if v.cve_url %}<a href="{{ v.cve_url }}" target="_blank" rel="noopener"{% if v.cve_description %} data-bs-toggle="tooltip" title="{{ v.cve_description|truncatechars:400 }}"{% endif %}>{{ v.cve }}</a>{% else %}<span {% if v.cve_description %}data-bs-toggle="tooltip" title="{{ v.cve_description|truncatechars:400 }}"{% endif %}>{{ v.cve|default:"—" }}</span>{% endif %}</td>
+        <td>{{ v.package }}<div class="text-muted nowrap">{{ v.current_version|default:"?" }} &rarr; <span class="text-success">{{ v.recommended_version|default:"no fix" }}</span></div></td>
+        <td style="max-width: 280px"><div class="text-truncate" title="{{ v.image }}">{{ v.image|default:"—" }}</div><div class="text-muted text-truncate" title="{{ v.asset_id }}">{{ v.asset_name|default:v.asset_id }}</div></td>
+        <td>{{ v.environment|default:"—" }}</td>
+        <td class="text-end">{{ v.days_open }}</td>
+        <td class="nowrap {% if v.slo_overdue %}text-overdue{% endif %}">{{ v.slo_date|date:"Y-m-d"|default:"—" }}</td>
+        <td>{% if v.exception %}<span class="badge text-bg-info" {% if v.exception_reason %}data-bs-toggle="tooltip" title="{{ v.exception_reason }}"{% endif %}>Yes</span>{% else %}—{% endif %}</td>
+        <td class="nowrap">{{ v.ritm|default:"—" }}</td>
+        <td class="nowrap text-muted">{{ v.alert_id }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="11" class="text-muted">No vulnerabilities match these filters.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

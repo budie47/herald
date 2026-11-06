@@ -1,0 +1,27 @@
+{% extends "settings/_base.html" %}
+{% block title %}{{ target.email }}{% endblock %}
+{% block settings %}
+<a class="small" href="{% url 'settings_users' %}">&larr; Users</a>
+<h2 class="h5 mt-2">{{ target.email }}{% if target.is_superuser %} <span class="badge text-bg-dark">superadmin</span>{% endif %}</h2>
+<div class="row g-3">
+  <div class="col-lg-6"><div class="card"><div class="card-body">
+    <h3 class="h6">Details and role</h3>
+    <form method="post">{% csrf_token %}
+      {% include "_form_fields.html" %}
+      <button class="btn btn-primary">Save</button>
+    </form>
+  </div></div></div>
+  <div class="col-lg-6"><div class="card"><div class="card-body">
+    <h3 class="h6">Reset password</h3>
+    <p class="small text-muted">Email the user a link to choose a new password:</p>
+    <form method="post" action="{% url 'settings_user_send_reset' target.pk %}" class="mb-4">{% csrf_token %}
+      <button class="btn btn-outline-primary"><i class="bi bi-envelope"></i> Send reset link</button>
+    </form>
+    <p class="small text-muted">Or set a temporary password. They must change it at their next sign-in.</p>
+    <form method="post" action="{% url 'settings_user_set_password' target.pk %}" autocomplete="off">{% csrf_token %}
+      {% with form=password_form %}{% include "_form_fields.html" %}{% endwith %}
+      <button class="btn btn-outline-danger">Set temporary password</button>
+    </form>
+  </div></div></div>
+</div>
+{% endblock %}

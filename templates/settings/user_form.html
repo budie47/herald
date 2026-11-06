@@ -1,0 +1,12 @@
+{% extends "settings/_base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block settings %}
+<div class="card"><div class="card-body">
+  <a class="small" href="{% url 'settings_users' %}">&larr; Users</a>
+  <h2 class="h5 mt-2">{{ title }}</h2>
+  <form method="post" style="max-width: 480px" autocomplete="off">{% csrf_token %}
+    {% include "_form_fields.html" %}
+    <button class="btn btn-primary">Create user</button>
+  </form>
+</div></div>
+{% endblock %}

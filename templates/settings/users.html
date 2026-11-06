@@ -1,0 +1,33 @@
+{% extends "settings/_base.html" %}
+{% block title %}Users{% endblock %}
+{% block settings %}
+<div class="card"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0">Users</h2>
+    {% if user.is_superuser %}<a class="btn btn-primary btn-sm" href="{% url 'settings_user_create' %}"><i class="bi bi-person-plus"></i> Add user</a>{% endif %}
+  </div>
+  {% if not user.is_superuser %}<p class="small text-muted">Only the superadmin can add users, change roles or reset passwords.</p>{% endif %}
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0">
+    <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Joined</th><th>Last login</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.email }}{% if u.is_superuser %} <span class="badge text-bg-dark">superadmin</span>{% endif %}</td>
+        <td>{{ u.full_name|default:"—" }}</td>
+        <td>{{ u.role.name|default:"—" }}</td>
+        <td>
+          {% if not u.is_active %}<span class="badge text-bg-secondary">disabled</span>
+          {% elif u.must_change_password %}<span class="badge text-bg-warning">must change password</span>
+          {% else %}<span class="badge text-bg-success">active</span>{% endif %}
+        </td>
+        <td class="nowrap">{{ u.date_joined|date:"Y-m-d" }}</td>
+        <td class="nowrap">{{ u.last_login|date:"Y-m-d H:i"|default:"never" }}</td>
+        <td class="text-end">{% if user.is_superuser %}<a class="btn btn-outline-secondary btn-sm" href="{% url 'settings_user_edit' u.pk %}">Manage</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+{% endblock %}

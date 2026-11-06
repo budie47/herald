@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Upload Data{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Upload Data <span class="fs-6 text-muted">· Container vulnerabilities</span></h1>
+<div class="row g-3 mb-3">
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body">
+    {% if draft %}
+      <h2 class="h6">Import #{{ draft.pk }} is in progress</h2>
+      <p class="small">Only one draft can exist at a time. New files are added to it.</p>
+      <a class="btn btn-warning btn-sm mb-3" href="{% url 'import_detail' draft.pk %}">Open draft import #{{ draft.pk }}</a>
+      <h2 class="h6">Add a batch to import #{{ draft.pk }}</h2>
+    {% else %}
+      <h2 class="h6">Start a new import</h2>
+    {% endif %}
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.file }}
+      <div class="form-text mb-2">CSV (.csv) or Excel (.xlsx, .xlsm). For Excel the first worksheet is read. The header row can start on any row.</div>
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        <button class="btn btn-primary"><i class="bi bi-cloud-upload"></i> Upload</button>
+        <span class="small text-muted">Blank template:
+          <a href="{% url 'import_template' 'xlsx' %}"><i class="bi bi-file-earmark-excel"></i> Excel</a>
+          <a class="ms-2" href="{% url 'import_template' 'csv' %}"><i class="bi bi-filetype-csv"></i> CSV</a></span>
+      </div>
+    </form>
+  </div></div></div>
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body small">
+    <h2 class="h6">How imports work</h2>
+    <ol class="ps-3">
+      <li>Upload one or more files — a whole export split into batches is fine. They are held in a <strong>draft import</strong>; live data does not change. A later file replaces an earlier row with the same Alert ID.</li>
+      <li><strong>Review &amp; finalize</strong> shows exactly what will change, then applies it. Or discard it.</li>
+    </ol>
+    <p>An open vulnerability is marked <strong>remediated</strong> only when the import contains a <strong>newer scan of the same asset</strong> (by <code>Asset ID</code> and <code>Last Scan</code>) without that alert. Assets not in the import are never touched, re-uploading an older file changes nothing, and a rejected (unreadable) row never counts as evidence of a fix.</p>
+    <p>If a remediated alert appears in a newer scan it is <strong>reopened</strong>. Open alerts whose asset has no newer scan for the configured number of days are flagged <span class="badge text-bg-warning">Not seen</span> for review — not counted as fixed.</p>
+    <details>
+      <summary>Expected columns ({{ columns|length }}) — <em>Alert ID</em> and <em>App ID</em> are required</summary>
+      <div class="row row-cols-2 row-cols-md-3 g-1 mt-1">
+        {% for label, key, kind in columns %}<div class="col"><code>{{ label }}</code>{% if kind != "text" %} <span class="text-muted">({{ kind }})</span>{% endif %}</div>{% endfor %}
+      </div>
+      <p class="mt-2 mb-0 text-muted">Matched ignoring case and spaces; “Enviroment” is accepted for Environment.</p>
+    </details>
+  </div></div></div>
+</div>
+
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6">Import history</h2>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>Import</th><th>Status</th><th>Finalized (UTC)</th><th>By</th><th class="text-end">Files</th><th class="text-end">Assets</th><th class="text-end">New</th><th class="text-end">Updated</th><th class="text-end">Reopened</th><th class="text-end">Remediated</th><th class="text-end">Skipped (older)</th></tr></thead>
+    <tbody>
+    {% for run in history %}
+      <tr>
+        <td><a href="{% url 'import_detail' run.pk %}">#{{ run.pk }}</a></td>
+        <td>{% if run.status == "finalized" %}<span class="badge text-bg-success">finalized</span>{% else %}<span class="badge text-bg-secondary">{{ run.status }}</span>{% endif %}</td>
+        <td class="nowrap">{{ run.finalized_at|date:"Y-m-d H:i"|default:"—" }}</td>
+        <td class="small">{{ run.finalized_by.email|default:"" }}</td>
+        <td class="text-end">{{ run.files_count }}</td>
+        <td class="text-end">{{ run.assets_count }}</td>
+        <td class="text-end">{{ run.new_count }}</td>
+        <td class="text-end">{{ run.updated_count }}</td>
+        <td class="text-end {% if run.reopened_count %}text-warning fw-semibold{% endif %}">{{ run.reopened_count }}</td>
+        <td class="text-end {% if run.remediated_count %}text-success fw-semibold{% endif %}">{{ run.remediated_count }}</td>
+        <td class="text-end text-muted">{{ run.skipped_count }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="11" class="text-muted">No imports yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+
+{% if legacy %}
+<div class="card"><div class="card-body">
+  <h2 class="h6">Uploads from before import runs existed</h2>
+  <table class="table table-sm mb-0">
+    <thead><tr><th>File</th><th>Uploaded (UTC)</th><th>By</th><th class="text-end">Rows</th><th>Note</th></tr></thead>
+    <tbody>{% for u in legacy %}<tr><td>{{ u.filename }}</td><td>{{ u.uploaded_at|date:"Y-m-d H:i" }}</td><td>{{ u.uploaded_by }}</td><td class="text-end">{{ u.rows }}</td><td>{{ u.note }}</td></tr>{% endfor %}</tbody>
+  </table>
+</div></div>
+{% endif %}
+{% endblock %}

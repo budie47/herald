@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Delete {{ app.app_id }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Delete {{ app.app_id }}?</h1>
+<div class="card" style="max-width: 640px"><div class="card-body">
+  <p>This removes the owner registration for <strong>{{ app.app_id }}</strong>{% if app.name %} ({{ app.name }}){% endif %}.</p>
+  <p class="text-muted">Its {{ vuln_count }} vulnerability record{{ vuln_count|pluralize }} and notification history are kept; the App ID will show as unregistered.</p>
+  <form method="post" class="d-flex gap-2">{% csrf_token %}
+    <button class="btn btn-danger">Delete application</button>
+    <a class="btn btn-outline-secondary" href="{% url 'app_detail' app.app_id %}">Cancel</a>
+  </form>
+</div></div>
+{% endblock %}

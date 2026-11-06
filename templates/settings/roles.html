@@ -1,0 +1,16 @@
+{% extends "settings/_base.html" %}
+{% block title %}Roles{% endblock %}
+{% block settings %}
+<div class="card"><div class="card-body">
+  <h2 class="h5">Roles</h2>
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>Role</th><th>What it can do</th><th class="text-end">Users</th></tr></thead>
+    <tbody>
+    {% for role in roles %}
+      <tr><td class="fw-semibold nowrap">{{ role.name }}</td><td>{{ role.description }}</td><td class="text-end">{{ role.users.count }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="small text-muted mt-3 mb-0">The superadmin is an Administrator who can also add users, assign roles and reset passwords. A User-role account sees an App ID when its email is the owner or one of the extra notification emails.</p>
+</div></div>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% load herald_tags %}
+{% block title %}Notification log{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Notification log</h1>
+<div class="card"><div class="card-body">
+  <form method="get" class="row g-2 mb-2">
+    <div class="col-md-4"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="App ID, recipient or sender"></div>
+    <div class="col-md-2"><select name="status" class="form-select form-select-sm"><option value="">All statuses</option><option value="sent" {% if params.status == "sent" %}selected{% endif %}>Sent</option><option value="failed" {% if params.status == "failed" %}selected{% endif %}>Failed</option></select></div>
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+    <div class="col-md-2"><button class="btn btn-sm btn-dark">Apply</button></div>
+  </form>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0 small">
+    <thead><tr><th>Time (UTC)</th><th>App ID</th><th>Status</th><th>Sent by</th><th>Recipients</th><th class="text-end">Vulnerabilities</th><th class="text-end">Past SLO</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for n in page %}
+      <tr>
+        <td class="nowrap">{{ n.sent_at|date:"Y-m-d H:i:s" }}</td>
+        <td><a href="{% url 'app_detail' n.app_id %}">{{ n.app_id }}</a></td>
+        <td>{% if n.status == "sent" %}<span class="badge text-bg-success">sent</span>{% else %}<span class="badge text-bg-danger">failed</span>{% endif %}</td>
+        <td>{{ n.sent_by.email|default:"—" }}</td>
+        <td>{{ n.recipients }}</td>
+        <td class="text-end">{{ n.vuln_count }}</td>
+        <td class="text-end">{{ n.past_slo_count }}</td>
+        <td class="text-danger">{{ n.error|truncatechars:160 }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="8" class="text-muted">No notifications yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

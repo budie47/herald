@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="h3 mb-3">Settings</h1>
+<div class="row g-3">
+  <div class="col-md-3 col-lg-2">
+    <div class="list-group settings-nav">
+      <a class="list-group-item list-group-item-action {% if section == 'general' %}active{% endif %}" href="{% url 'settings_general' %}"><i class="bi bi-sliders"></i> General</a>
+      <div class="list-group-item small text-muted fw-semibold">Users and Roles</div>
+      <a class="list-group-item list-group-item-action ps-4 {% if section == 'users' %}active{% endif %}" href="{% url 'settings_users' %}"><i class="bi bi-people"></i> Users</a>
+      <a class="list-group-item list-group-item-action ps-4 {% if section == 'roles' %}active{% endif %}" href="{% url 'settings_roles' %}"><i class="bi bi-person-badge"></i> Roles</a>
+      <a class="list-group-item list-group-item-action {% if section == 'email' %}active{% endif %}" href="{% url 'settings_email' %}"><i class="bi bi-envelope-at"></i> Email Setting</a>
+    </div>
+  </div>
+  <div class="col-md-9 col-lg-10">{% block settings %}{% endblock %}</div>
+</div>
+{% endblock %}

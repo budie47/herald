@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% load herald_tags humanize %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Dashboard</h1>
+  <div class="small text-muted">
+    {% if last_import %}Last import: {% if user.is_admin %}<a href="{% url 'import_detail' last_import.pk %}">#{{ last_import.pk }}</a>{% else %}#{{ last_import.pk }}{% endif %} · {{ last_import.finalized_at|date:"Y-m-d H:i" }} UTC{% else %}No imports yet{% endif %}
+  </div>
+</div>
+{% if not user.can_view_all %}<div class="alert alert-info py-2 small">Showing only the applications tied to {{ user.email }}.</div>{% endif %}
+
+<div class="row g-3 mb-3 row-cols-2 row-cols-md-3 row-cols-xl-6">
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-bug"></i> Open vulnerabilities</div><div class="stat">{{ open_count|intcomma }}</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-grid-3x3-gap"></i> Apps covered by this tool</div><div class="stat">{{ apps_registered }}</div>
+    <div class="small text-muted">Registered App IDs</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-exclamation-triangle"></i> Apps with open vulnerabilities</div><div class="stat">{{ apps_with_open }}</div>
+    <div class="small text-muted">{{ apps_with_open_registered }} registered · {{ apps_with_open_unregistered }} unregistered</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-fire"></i> Critical + High</div><div class="stat">{{ critical_high|intcomma }}</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-alarm"></i> Past SLO date</div><div class="stat {% if past_slo %}text-danger{% endif %}">{{ past_slo|intcomma }}</div>
+    <div class="small text-muted">As of {{ today|date:"Y-m-d" }}</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-check2-circle"></i> Remediated · last 30 days</div><div class="stat text-success">{{ remediated_30|intcomma }}</div>
+    <div class="small text-muted">{{ remediated_all|intcomma }} all time{% if avg_fix_days is not None %} · avg {{ avg_fix_days }} days to fix{% endif %}</div>
+  </div></div></div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">By severity</h2>
+    {% for sev, n in severity_bars %}
+    <div class="row align-items-center g-2 mb-1">
+      <div class="col-4 small">{{ sev|default:"(not set)" }}</div>
+      <div class="col-6"><div class="bar-track"><div class="bar-fill bar-{{ sev|sev_class|cut:"sev-" }}" style="width: {% widthratio n severity_max 100 %}%"></div></div></div>
+      <div class="col-2 text-end small">{{ n|intcomma }}</div>
+    </div>
+    {% endfor %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">By environment</h2>
+    {% for env, n in env_bars %}
+    <div class="row align-items-center g-2 mb-1">
+      <div class="col-4 small text-truncate" title="{{ env }}">{{ env }}</div>
+      <div class="col-6"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n env_max 100 %}%"></div></div></div>
+      <div class="col-2 text-end small">{{ n|intcomma }}</div>
+    </div>
+    {% empty %}<p class="small text-muted mb-0">No open vulnerabilities.</p>{% endfor %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Coverage</h2>
+    <p class="mb-1">{{ owned_apps }} of {{ finding_apps }} App IDs with findings have an owner registered.</p>
+    {% with p=owned_apps|pct:finding_apps %}
+    <div class="progress mb-2" style="height: 1.1rem"><div class="progress-bar bg-success" style="width: {{ p }}%">{{ p }}%</div></div>
+    {% endwith %}
+    {% if unowned_apps and user.can_view_all %}
+    <a class="btn btn-sm btn-outline-warning" href="{% url 'app_list' %}?status=unregistered"><i class="bi bi-person-plus"></i> Register {{ unowned_apps }} unowned App ID{{ unowned_apps|pluralize }}</a>
+    {% endif %}
+    <hr>
+    {% if not_seen %}<div class="small text-warning mb-1"><i class="bi bi-eye-slash"></i> <a class="link-warning" href="{% url 'app_list' %}?status=not_rescanned">{{ not_seen }} open vulnerabilit{{ not_seen|pluralize:"y,ies" }} not rescanned in {{ not_seen_days }}+ days</a></div>{% else %}<div class="small text-muted mb-1">No not-seen vulnerabilities.</div>{% endif %}
+    <div class="small mb-1">Open vulnerabilities flagged with an exception: {{ exceptions }}</div>
+    <div class="small mb-1">Notifications sent: {{ notifications_sent }}</div>
+    <div class="small">Remediated in last 30 days:
+      {% for sev, n in recent_by_sev %}<span class="sev {{ sev|sev_class }}">{{ n }} {{ sev }}</span> {% empty %}none{% endfor %}
+    </div>
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">Top 10 applications by open vulnerabilities</h2>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>App ID</th><th class="text-end">Total</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th>Owner registered</th></tr></thead>
+    <tbody>
+    {% for row in top_apps %}
+      <tr>
+        <td><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
+        <td class="text-end">{{ row.total }}</td>
+        <td>{% for sev, n in row.severities %}<span class="sev {{ sev|sev_class }}" title="{{ sev }}">{{ n }}</span> {% endfor %}</td>
+        <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
+        <td>{% if row.registered %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<span class="text-warning"><i class="bi bi-exclamation-circle"></i> No</span>{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="text-muted">No open vulnerabilities{% if user.is_admin %} — <a href="{% url 'import_home' %}">upload scan data</a>{% endif %}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+{% endblock %}

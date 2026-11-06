@@ -1,0 +1,25 @@
+{% load herald_tags %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2">
+  <div class="small text-muted">
+    {% if page.paginator.count %}Showing {{ page.start_index }}–{{ page.end_index }} of {{ page.paginator.count }}{% else %}Nothing to show{% endif %}
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <form method="get" class="d-flex align-items-center gap-1">
+      {% for k, v in carry_params %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+      <label class="small text-muted" for="per_page">Per page</label>
+      <select id="per_page" name="per_page" class="form-select form-select-sm w-auto" onchange="this.form.submit()">
+        {% for size in page_sizes %}<option value="{{ size }}" {% if size == per_page %}selected{% endif %}>{{ size|capfirst }}</option>{% endfor %}
+      </select>
+    </form>
+    {% if page.paginator.num_pages > 1 %}
+    <ul class="pagination pagination-sm mb-0">
+      <li class="page-item {% if not page.has_previous %}disabled{% endif %}"><a class="page-link" href="{% if page.has_previous %}{% qs page=page.previous_page_number %}{% else %}#{% endif %}">&laquo;</a></li>
+      {% for n in page_range %}
+        {% if n == page.paginator.ELLIPSIS %}<li class="page-item disabled"><span class="page-link">…</span></li>
+        {% else %}<li class="page-item {% if n == page.number %}active{% endif %}"><a class="page-link" href="{% qs page=n %}">{{ n }}</a></li>{% endif %}
+      {% endfor %}
+      <li class="page-item {% if not page.has_next %}disabled{% endif %}"><a class="page-link" href="{% if page.has_next %}{% qs page=page.next_page_number %}{% else %}#{% endif %}">&raquo;</a></li>
+    </ul>
+    {% endif %}
+  </div>
+</div>

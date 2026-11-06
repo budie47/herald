@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Import #{{ run.pk }}{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'import_home' %}">&larr; Upload Data</a>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Import #{{ run.pk }}
+    {% if run.is_draft %}<span class="badge text-bg-warning fs-6 align-middle">draft</span>
+    {% elif run.status == "finalized" %}<span class="badge text-bg-success fs-6 align-middle">finalized</span>
+    {% else %}<span class="badge text-bg-secondary fs-6 align-middle">{{ run.status }}</span>{% endif %}</h1>
+  <div class="small text-muted">Started {{ run.created_at|date:"Y-m-d H:i" }} UTC{% if run.created_by %} by {{ run.created_by.email }}{% endif %}
+    {% if run.finalized_at %} · finalized {{ run.finalized_at|date:"Y-m-d H:i" }} UTC by {{ run.finalized_by.email|default:"?" }}{% endif %}</div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Files</h2>
+    <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead><tr><th>File</th><th>Uploaded (UTC)</th><th class="text-end">Header row</th><th class="text-end">Read</th><th class="text-end">Accepted</th><th class="text-end">Rejected</th></tr></thead>
+      <tbody>
+      {% for f in files %}
+        <tr>
+          <td>{{ f.filename }}
+            {% if f.unknown_columns %}<div class="small text-muted">Ignored columns: {{ f.unknown_columns|join:", "|truncatechars:200 }}</div>{% endif %}</td>
+          <td class="nowrap">{{ f.uploaded_at|date:"Y-m-d H:i" }}</td>
+          <td class="text-end">{{ f.header_row }}</td>
+          <td class="text-end">{{ f.rows_read }}</td>
+          <td class="text-end">{{ f.accepted }}</td>
+          <td class="text-end {% if f.rejected %}text-danger fw-semibold{% endif %}">{{ f.rejected }}</td>
+        </tr>
+      {% empty %}<tr><td colspan="6" class="text-muted">No files yet.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if run.is_draft %}
+    <form method="post" action="{% url 'import_add_file' run.pk %}" enctype="multipart/form-data" class="d-flex gap-2">{% csrf_token %}
+      {{ form.file }}
+      <button class="btn btn-outline-primary nowrap"><i class="bi bi-plus-lg"></i> Add another batch</button>
+    </form>
+    {% endif %}
+  </div></div></div>
+
+  <div class="col-lg-5"><div class="card h-100"><div class="card-body">
+    {% if run.is_draft %}
+      <h2 class="h6">What finalizing will do</h2>
+      <table class="table table-sm mb-2">
+        <tr><td>New vulnerabilities</td><td class="text-end fw-bold">{{ plan.new|length }}</td></tr>
+        <tr><td>Still open (updated)</td><td class="text-end">{{ plan.updated|length }}</td></tr>
+        <tr><td>Reopened <span class="small text-muted">— remediated, found in a newer scan</span></td><td class="text-end text-warning fw-bold">{{ plan.reopened|length }}</td></tr>
+        <tr><td>Marked remediated <span class="small text-muted">— missing from a newer scan of their asset</span></td><td class="text-end text-success fw-bold">{{ plan.remediated|length }}</td></tr>
+        <tr><td>Skipped <span class="small text-muted">— older than what is stored</span></td><td class="text-end text-muted">{{ plan.skipped|length }}</td></tr>
+        <tr class="table-light"><td>Assets in this import</td><td class="text-end">{{ plan.assets }}</td></tr>
+      </table>
+      {% if plan.protected_assets %}
+      <div class="alert alert-warning py-2 small">{{ plan.protected_assets|length }} asset{{ plan.protected_assets|length|pluralize }} had rejected rows, so nothing on {{ plan.protected_assets|length|pluralize:"it,them" }} will be marked remediated by this import.</div>
+      {% endif %}
+      <div class="d-flex gap-2">
+        <form method="post" action="{% url 'import_finalize' run.pk %}">{% csrf_token %}
+          <button class="btn btn-success" {% if not files %}disabled{% endif %} onclick="return confirm('Finalize import #{{ run.pk }}? This applies the changes above to live data.')"><i class="bi bi-check2-all"></i> Finalize import</button>
+        </form>
+        <form method="post" action="{% url 'import_discard' run.pk %}">{% csrf_token %}
+          <button class="btn btn-outline-danger" onclick="return confirm('Discard import #{{ run.pk }}? Uploaded files will be dropped and nothing will change.')"><i class="bi bi-trash"></i> Discard</button>
+        </form>
+      </div>
+      <p class="small text-muted mt-2 mb-0">Waiting for more batches? Leave it as a draft — nothing is applied until you finalize.</p>
+    {% else %}
+      <h2 class="h6">Result</h2>
+      <table class="table table-sm mb-0">
+        <tr><td>Files</td><td class="text-end">{{ run.files_count }}</td></tr>
+        <tr><td>Assets</td><td class="text-end">{{ run.assets_count }}</td></tr>
+        <tr><td>New</td><td class="text-end">{{ run.new_count }}</td></tr>
+        <tr><td>Updated</td><td class="text-end">{{ run.updated_count }}</td></tr>
+        <tr><td>Reopened</td><td class="text-end">{{ run.reopened_count }}</td></tr>
+        <tr><td>Remediated</td><td class="text-end">{{ run.remediated_count }}</td></tr>
+        <tr><td>Skipped (older)</td><td class="text-end">{{ run.skipped_count }}</td></tr>
+      </table>
+    {% endif %}
+  </div></div></div>
+</div>
+
+{% if run.is_draft %}
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6">Will be marked remediated <span class="text-muted fw-normal small">{% for app_id, n in plan.remediated_by_app %}{{ app_id }}: {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}</span></h2>
+  {% if plan.remediated %}
+  <div class="table-responsive" style="max-height: 480px; overflow-y: auto">
+  <table class="table table-sm small mb-0">
+    <thead class="sticky-top bg-white"><tr><th>App ID</th><th>Alert ID</th><th>Severity</th><th>CVE</th><th>Package</th><th>Asset</th><th>Old scan</th><th>New scan</th></tr></thead>
+    <tbody>
+    {% for v, new_scan in plan.remediated %}
+      <tr><td>{{ v.app_id }}</td><td>{{ v.alert_id }}</td><td>{{ v.severity }}</td><td>{{ v.cve }}</td><td>{{ v.package }}</td><td>{{ v.asset_name|default:v.asset_id }}</td>
+        <td class="nowrap">{{ v.last_scan|date:"Y-m-d H:i" }}</td><td class="nowrap text-success">{{ new_scan|date:"Y-m-d H:i" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}<p class="small text-muted mb-0">Nothing will be marked remediated.</p>{% endif %}
+</div></div>
+{% elif remediated %}
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6">Remediated by this import</h2>
+  <div class="table-responsive" style="max-height: 480px; overflow-y: auto">
+  <table class="table table-sm small mb-0">
+    <thead class="sticky-top bg-white"><tr><th>App ID</th><th>Alert ID</th><th>Severity</th><th>CVE</th><th>Asset</th><th>Last seen</th><th>Remediated (scan)</th></tr></thead>
+    <tbody>{% for v in remediated %}<tr><td>{{ v.app_id }}</td><td>{{ v.alert_id }}</td><td>{{ v.severity }}</td><td>{{ v.cve }}</td><td>{{ v.asset_name|default:v.asset_id }}</td><td>{{ v.last_scan|date:"Y-m-d H:i" }}</td><td>{{ v.remediated_at|date:"Y-m-d H:i" }}</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+</div></div>
+{% endif %}
+
+{% for f in files %}{% if f.errors %}
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6 text-danger">Rejected rows in {{ f.filename }} ({{ f.rejected }})</h2>
+  <div class="table-responsive" style="max-height: 320px; overflow-y: auto">
+  <table class="table table-sm small mb-0">
+    <thead class="sticky-top bg-white"><tr><th class="text-end">Row</th><th>Reason</th><th>Alert ID</th><th>Asset ID</th></tr></thead>
+    <tbody>{% for e in f.errors %}<tr><td class="text-end">{{ e.row }}</td><td>{{ e.reason }}</td><td>{{ e.alert_id }}</td><td>{{ e.asset_id }}</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+</div></div>
+{% endif %}{% endfor %}
+{% endblock %}
