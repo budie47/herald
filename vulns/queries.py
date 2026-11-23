@@ -28,9 +28,14 @@ def not_seen_cutoff():
 
 
 def scoped_vulns(user):
-    qs = Vulnerability.objects.all()
+    qs = Vulnerability.objects.with_owner()
     ids = visible_app_ids(user)
-    return qs if ids is None else qs.filter(app_id__in=ids)
+    return qs if ids is None else qs.filter(owner_app_id__in=ids)
+
+
+def vulns_for_app(app_id):
+    """Alerts tagged with this App ID plus untagged alerts in accounts assigned to it."""
+    return Vulnerability.objects.with_owner().filter(owner_app_id=app_id)
 
 
 def scoped_apps(user):
@@ -98,10 +103,15 @@ def filter_vulns(qs, params):
         qs = qs.filter(
             Q(cve__icontains=q) | Q(package__icontains=q) | Q(current_version__icontains=q)
             | Q(recommended_version__icontains=q) | Q(image__icontains=q) | Q(asset_id__icontains=q)
-            | Q(asset_name__icontains=q) | Q(alert_id__icontains=q) | Q(cluster__icontains=q)
-            | Q(namespace__icontains=q) | Q(ritm__icontains=q)
+            | Q(instance__icontains=q) | Q(alert_id__icontains=q) | Q(cluster__icontains=q)
+            | Q(namespace__icontains=q) | Q(ritm__icontains=q) | Q(app_id__icontains=q)
+            | Q(cloud_account__account_id__icontains=q) | Q(cloud_account__account_name__icontains=q)
         )
-    return qs.annotate(sev_rank=severity_rank()).order_by("status", "sev_rank", "slo_date", "alert_id")
+    return (
+        qs.select_related("cloud_account")
+        .annotate(sev_rank=severity_rank())
+        .order_by("status", "sev_rank", "slo_date", "alert_id")
+    )
 
 
 def environments(qs):
@@ -137,9 +147,11 @@ def application_rows(user, params):
     elif params.get("exception") == "no":
         counted = counted.filter(exception=False)
 
-    stats = {r["app_id"]: r for r in counted.values("app_id").annotate(**_severity_counts())}
-    totals = {r["app_id"]: r["n"] for r in vulns.filter(status=OPEN).values("app_id").annotate(n=Count("id"))}
-    seen_ids = set(vulns.values_list("app_id", flat=True).distinct())
+    owned = counted.filter(owner_app_id__isnull=False)
+    stats = {r["owner_app_id"]: r for r in owned.values("owner_app_id").annotate(**_severity_counts())}
+    open_owned = vulns.filter(status=OPEN, owner_app_id__isnull=False)
+    totals = {r["owner_app_id"]: r["n"] for r in open_owned.values("owner_app_id").annotate(n=Count("id"))}
+    seen_ids = set(vulns.filter(owner_app_id__isnull=False).values_list("owner_app_id", flat=True).distinct())
     apps = {a.app_id: a for a in scoped_apps(user)}
     last_notified = {
         r["app_id"]: r["last"]

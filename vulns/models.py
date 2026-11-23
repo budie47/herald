@@ -2,7 +2,8 @@ import re
 
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import CharField, F, Q, Value
+from django.db.models.functions import Coalesce, NullIf
 from django.utils import timezone
 
 
@@ -42,6 +43,43 @@ class Application(models.Model):
     @property
     def has_email(self):
         return bool(self.recipients())
+
+
+class CloudAccount(models.Model):
+    """An AWS account or Azure subscription. Alerts with no App ID inherit the application assigned here."""
+
+    account_id = models.CharField("Account ID", max_length=100, unique=True)
+    account_name = models.CharField(max_length=255)
+    provider = models.CharField(max_length=30, blank=True, db_index=True)
+    application = models.ForeignKey(
+        Application, null=True, blank=True, on_delete=models.SET_NULL, related_name="cloud_accounts"
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    assigned_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["account_name", "account_id"]
+
+    def __str__(self):
+        return f"{self.account_name} ({self.account_id})"
+
+
+class AccountAssignment(models.Model):
+    """Audit trail: who changed which App ID an account's untagged alerts belong to."""
+
+    cloud_account = models.ForeignKey(CloudAccount, on_delete=models.CASCADE, related_name="assignments")
+    old_app_id = models.CharField(max_length=100, blank=True)
+    new_app_id = models.CharField(max_length=100, blank=True)
+    untagged_open = models.PositiveIntegerField(default=0)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
 
 
 class ImportRun(models.Model):
@@ -101,7 +139,7 @@ class StagedRow(models.Model):
     file = models.ForeignKey(ImportFile, on_delete=models.CASCADE, related_name="staged_rows")
     row_number = models.PositiveIntegerField()
     alert_id = models.CharField(max_length=200)
-    app_id = models.CharField(max_length=100)
+    app_id = models.CharField(max_length=100, blank=True)
     asset_id = models.CharField(max_length=500, blank=True)
     last_scan = models.DateTimeField(null=True, blank=True)
     data = models.JSONField(default=dict)
@@ -109,15 +147,32 @@ class StagedRow(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["run", "alert_id"], name="unique_staged_alert")]
 
+    @property
+    def account_id(self):
+        return self.data["account_id"]
+
+
+class VulnerabilityQuerySet(models.QuerySet):
+    def with_owner(self):
+        """owner_app_id: the alert's own App ID, else its account's assigned App ID, else NULL (unassigned)."""
+        return self.annotate(
+            owner_app_id=Coalesce(
+                NullIf("app_id", Value("")), F("cloud_account__application__app_id"), output_field=CharField()
+            )
+        )
+
 
 class Vulnerability(models.Model):
     OPEN, REMEDIATED = "open", "remediated"
     STATUS_CHOICES = [(OPEN, "Open"), (REMEDIATED, "Remediated")]
 
     alert_id = models.CharField(max_length=200, unique=True)
-    app_id = models.CharField(max_length=100, db_index=True)
+    cloud_account = models.ForeignKey(CloudAccount, on_delete=models.PROTECT, related_name="vulnerabilities")
+    app_id = models.CharField(
+        "App ID from scan", max_length=100, blank=True, db_index=True, help_text="Blank when the scanner has no App ID."
+    )
     asset_id = models.CharField(max_length=500, blank=True, db_index=True)
-    asset_name = models.CharField(max_length=500, blank=True)
+    instance = models.CharField(max_length=255, blank=True)
     image = models.CharField(max_length=500, blank=True)
     cluster = models.CharField(max_length=255, blank=True)
     namespace = models.CharField(max_length=255, blank=True)
@@ -130,7 +185,6 @@ class Vulnerability(models.Model):
     current_version = models.CharField(max_length=255, blank=True)
     recommended_version = models.CharField(max_length=255, blank=True)
     exception = models.BooleanField(default=False)
-    exception_reason = models.TextField(blank=True)
     ritm = models.CharField("RITM number", max_length=100, blank=True)
     slo_date = models.DateTimeField(null=True, blank=True)
     last_scan = models.DateTimeField(null=True, blank=True)
@@ -149,11 +203,25 @@ class Vulnerability(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(default=timezone.now)
 
+    objects = VulnerabilityQuerySet.as_manager()
+
     class Meta:
         indexes = [models.Index(fields=["app_id", "status"])]
 
     def __str__(self):
         return self.alert_id
+
+    @property
+    def account_number(self):
+        return self.cloud_account.account_id
+
+    @property
+    def account_name(self):
+        return self.cloud_account.account_name
+
+    @property
+    def provider(self):
+        return self.cloud_account.provider
 
     @property
     def is_open(self):

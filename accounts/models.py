@@ -17,7 +17,7 @@ class Role(models.Model):
         (
             OPERATION,
             "Operation",
-            "Can only view the dashboard, application details and the vulnerabilities of each application / App ID.",
+            "Can view the dashboard, application details and vulnerabilities, and assign cloud accounts to App IDs.",
         ),
         (
             USER,
@@ -120,3 +120,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     def can_view_all(self):
         """Administrators and Operation see every App ID; the User role sees only its own apps."""
         return self.is_admin or self.role_key == Role.OPERATION
+
+    @property
+    def can_assign_accounts(self):
+        return self.can_view_all

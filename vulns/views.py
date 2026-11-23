@@ -5,6 +5,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -14,18 +15,18 @@ from django.views.decorators.http import require_POST
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from accounts.permissions import admin_required, can_view_app
+from accounts.permissions import account_assigner_required, admin_required, can_view_app
 from core.models import AppSettings
 
-from . import lifecycle
+from . import assignment, lifecycle
 from .columns import COLUMNS, SEVERITY_ORDER
 from .forms import ApplicationForm, UploadForm
-from .models import Application, ImportRun, LegacyUpload, Notification, Vulnerability
+from .models import Application, CloudAccount, ImportRun, LegacyUpload, Notification, Vulnerability
 from .notify import NotificationNotAllowed, send_app_notification, vulns_csv
 from .parsing import FileFormatError
 from .queries import (
     OPEN, REMEDIATED, VULN_STATUSES, application_rows, environments, filter_vulns, not_seen_cutoff, paginate,
-    scoped_apps, scoped_notifications, scoped_vulns,
+    scoped_apps, scoped_notifications, scoped_vulns, vulns_for_app,
 )
 
 
@@ -45,8 +46,10 @@ def dashboard(request):
     vulns = scoped_vulns(request.user)
     open_vulns = vulns.filter(status=OPEN)
     registered_ids = set(scoped_apps(request.user).values_list("app_id", flat=True))
-    open_app_ids = set(open_vulns.values_list("app_id", flat=True).distinct())
-    finding_ids = set(vulns.values_list("app_id", flat=True).distinct())
+    open_owned = open_vulns.filter(owner_app_id__isnull=False)
+    unassigned = open_vulns.filter(owner_app_id__isnull=True)
+    open_app_ids = set(open_owned.values_list("owner_app_id", flat=True).distinct())
+    finding_ids = set(vulns.filter(owner_app_id__isnull=False).values_list("owner_app_id", flat=True).distinct())
 
     remediated = vulns.filter(status=REMEDIATED, remediated_at__isnull=False)
     recent = remediated.filter(remediated_at__gte=now - timedelta(days=30))
@@ -57,18 +60,23 @@ def dashboard(request):
     by_sev = dict(open_vulns.values_list("severity").annotate(n=Count("id")))
     severity_bars = [(s, by_sev.pop(s, 0)) for s in SEVERITY_ORDER] + sorted(by_sev.items())
     env_bars = [(e or "(not set)", n) for e, n in open_vulns.values_list("environment").annotate(n=Count("id")).order_by("-n")]
+    provider_bars = [
+        (p or "(not set)", n)
+        for p, n in open_vulns.values_list("cloud_account__provider").annotate(n=Count("id")).order_by("-n")
+    ]
     recent_by_sev = dict(recent.values_list("severity").annotate(n=Count("id")))
 
     top = list(
-        open_vulns.values("app_id")
+        open_owned.values("owner_app_id")
         .annotate(
             total=Count("id"),
             past_slo=Count("id", filter=Q(slo_date__lt=now)),
             **{s.lower(): Count("id", filter=Q(severity=s)) for s in SEVERITY_ORDER},
         )
-        .order_by("-total", "app_id")[:10]
+        .order_by("-total", "owner_app_id")[:10]
     )
     for row in top:
+        row["app_id"] = row["owner_app_id"]
         row["registered"] = row["app_id"] in registered_ids
         row["severities"] = [(s, row[s.lower()]) for s in SEVERITY_ORDER]
 
@@ -88,6 +96,11 @@ def dashboard(request):
         "severity_max": max([n for _, n in severity_bars] or [0]),
         "env_bars": env_bars,
         "env_max": max([n for _, n in env_bars] or [0]),
+        "provider_bars": provider_bars,
+        "provider_max": max([n for _, n in provider_bars] or [0]),
+        "unassigned_alerts": unassigned.count(),
+        "unassigned_critical_high": unassigned.filter(severity__in=["Critical", "High"]).count(),
+        "cloud_accounts": vulns.values("cloud_account").distinct().count(),
         "finding_apps": len(finding_ids),
         "owned_apps": owned,
         "unowned_apps": len(finding_ids) - owned,
@@ -129,14 +142,12 @@ def app_list(request):
 
 def _prefill_from_scan(app_id):
     """Suggest form values for an unregistered App ID from its scan data."""
-    names = Counter(
-        (v.data or {}).get("app_name") for v in Vulnerability.objects.filter(app_id=app_id).only("data")[:500]
-    )
-    names.pop(None, None)
-    names.pop("", None)
+    rows = [v.data or {} for v in Vulnerability.objects.filter(app_id=app_id).only("data")[:500]]
     initial = {"app_id": app_id}
-    if names:
-        initial["name"] = names.most_common(1)[0][0]
+    for field, column in (("name", "app_service"), ("business_service", "business_service"), ("department", "department")):
+        values = Counter(row.get(column) for row in rows if row.get(column))
+        if values:
+            initial[field] = values.most_common(1)[0][0]
     return initial
 
 
@@ -147,8 +158,9 @@ def app_create(request):
     if request.method == "POST" and form.is_valid():
         app = form.save()
         messages.success(request, f"Application {app.app_id} registered.")
-        return redirect("app_detail", app_id=app.app_id)
-    return render(request, "vulns/app_form.html", {"form": form, "title": "Register application"})
+        return _back(request, redirect("app_detail", app_id=app.app_id).url)
+    next_url = request.POST.get("next") or request.GET.get("next") or ""
+    return render(request, "vulns/app_form.html", {"form": form, "title": "Register application", "next": next_url})
 
 
 @admin_required
@@ -166,17 +178,21 @@ def app_edit(request, app_id):
 def app_delete(request, app_id):
     app = get_object_or_404(Application, app_id=app_id)
     if request.method == "POST":
-        app.delete()
-        messages.success(request, f"Application {app_id} deleted. Its vulnerability records were kept.")
+        with transaction.atomic():
+            assignment.assign(list(app.cloud_accounts.values_list("pk", flat=True)), None, request.user)
+            app.delete()
+        messages.success(
+            request, f"Application {app_id} deleted. Vulnerabilities were kept, and its accounts are unassigned."
+        )
         return redirect("app_list")
-    count = Vulnerability.objects.filter(app_id=app_id).count()
-    return render(request, "vulns/app_delete.html", {"app": app, "vuln_count": count})
+    context = {"app": app, "vuln_count": vulns_for_app(app_id).count(), "account_count": app.cloud_accounts.count()}
+    return render(request, "vulns/app_delete.html", context)
 
 
 def _detail_vulns(request, app_id):
     params = request.GET.copy()
     params.setdefault("status", "open")
-    return filter_vulns(Vulnerability.objects.filter(app_id=app_id), params), params
+    return filter_vulns(vulns_for_app(app_id), params), params
 
 
 @login_required
@@ -184,7 +200,7 @@ def app_detail(request, app_id):
     if not can_view_app(request.user, app_id):
         raise Http404
     app = Application.objects.filter(app_id=app_id).first()
-    all_vulns = Vulnerability.objects.filter(app_id=app_id)
+    all_vulns = vulns_for_app(app_id)
     if app is None and not all_vulns.exists():
         raise Http404
     now = timezone.now()
@@ -200,7 +216,18 @@ def app_detail(request, app_id):
         **{s.lower(): Count("id", filter=open_q & Q(severity=s)) for s in SEVERITY_ORDER},
     )
     vulns, params = _detail_vulns(request, app_id)
+    open_by_account = dict(
+        all_vulns.filter(status=OPEN).values_list("cloud_account_id").annotate(n=Count("id"))
+    )
+    linked = CloudAccount.objects.filter(
+        Q(application__app_id=app_id) | Q(pk__in=all_vulns.values("cloud_account_id"))
+    ).distinct()
+    cloud_accounts = list(linked)
+    for account in cloud_accounts:
+        account.app_open = open_by_account.get(account.pk, 0)
+        account.is_assigned = bool(app and account.application_id == app.pk)
     context = {
+        "cloud_accounts": sorted(cloud_accounts, key=lambda a: (-a.app_open, a.account_name)),
         "app": app,
         "app_id": app_id,
         "summary": summary,
@@ -218,11 +245,13 @@ def app_detail(request, app_id):
 
 
 EXPORT_COLUMNS = [
-    ("Status", "export_status"), ("Severity", "severity"), ("CVE", "cve"), ("CVE Description", "cve_description"),
-    ("Package", "package"), ("Current Version", "current_version"), ("Recommended Version", "recommended_version"),
-    ("Image", "image"), ("Asset ID", "asset_id"), ("Asset Name", "asset_name"), ("Environment", "environment"),
-    ("Cluster", "cluster"), ("Namespace", "namespace"), ("Days Open", "days_open"), ("SLO Date", "slo_date"),
-    ("Past SLO", "slo_overdue"), ("Exception", "exception"), ("RITM Number", "ritm"), ("Alert ID", "alert_id"),
+    ("Status", "export_status"), ("Provider", "provider"), ("Account ID", "account_number"),
+    ("Account Name", "account_name"), ("App ID from scan", "app_id"), ("Severity", "severity"), ("CVE ID", "cve"),
+    ("CVE Description", "cve_description"), ("Package", "package"), ("Current Version", "current_version"),
+    ("Recommended Version", "recommended_version"), ("Image", "image"), ("Asset ID", "asset_id"),
+    ("Instance", "instance"), ("Environment", "environment"), ("Cluster", "cluster"), ("Namespace", "namespace"),
+    ("Days Open", "days_open"), ("SLO Date", "slo_date"), ("Past SLO", "slo_overdue"), ("Exception", "exception"),
+    ("Exception RITM", "ritm"), ("Alert ID", "alert_id"),
     ("First Seen", "first_seen"), ("Last Scan", "last_scan"), ("Remediated", "remediated_at"), ("Reopened", "reopened_at"),
 ]
 
@@ -239,6 +268,111 @@ def app_export(request, app_id):
     response = HttpResponse(vulns_csv(vulns, EXPORT_COLUMNS), content_type="text/csv")
     response["Content-Disposition"] = f'attachment; filename="{app_id}_vulnerabilities_{timezone.now():%Y%m%d}.csv"'
     return response
+
+
+# --- cloud accounts ---------------------------------------------------------------------
+
+ACCOUNT_STATES = [("needs", "Needs assignment"), ("assigned", "Assigned"), ("mixed", "Multiple App IDs"), ("all", "All")]
+
+
+@account_assigner_required
+def account_list(request):
+    state = request.GET.get("state", "needs")
+    accounts = CloudAccount.objects.all()
+    q = (request.GET.get("q") or "").strip()
+    if q:
+        accounts = accounts.filter(
+            Q(account_id__icontains=q) | Q(account_name__icontains=q) | Q(application__app_id__icontains=q)
+        )
+    if request.GET.get("provider"):
+        accounts = accounts.filter(provider=request.GET["provider"])
+    seen = assignment.app_ids_by_account()
+    if state == "needs":
+        accounts = accounts.filter(pk__in=assignment.needs_assignment().values("pk"))
+    elif state == "assigned":
+        accounts = accounts.filter(application__isnull=False)
+    elif state == "mixed":
+        accounts = accounts.filter(pk__in=[pk for pk, ids in seen.items() if len(ids) > 1])
+    accounts = assignment.with_alert_counts(accounts).select_related("application")
+    accounts = accounts.order_by("-untagged_critical_high", "-untagged_open", "account_name")
+    pagination = paginate(request, accounts)
+    for account in pagination["page"]:
+        account.app_ids = seen.get(account.pk, [])
+    context = {
+        **pagination,
+        "states": ACCOUNT_STATES,
+        "state": state,
+        "providers": sorted(p for p in CloudAccount.objects.values_list("provider", flat=True).distinct() if p),
+        "applications": Application.objects.all(),
+        "params": request.GET,
+    }
+    return render(request, "vulns/account_list.html", context)
+
+
+@account_assigner_required
+@require_POST
+def account_assign(request):
+    pks = [pk for pk in request.POST.getlist("account_ids") if pk.isdigit()]
+    accounts = CloudAccount.objects.filter(pk__in=pks)
+    choice = request.POST.get("application", "")
+    if not pks or not accounts.exists():
+        messages.warning(request, "Tick at least one cloud account.")
+        return _back(request, "account_list")
+    if not choice:
+        messages.warning(request, "Choose an App ID to assign.")
+        return _back(request, "account_list")
+    application = None if choice == "none" else Application.objects.filter(pk=choice if choice.isdigit() else None).first()
+    if choice != "none" and application is None:
+        messages.error(request, "That application no longer exists.")
+        return _back(request, "account_list")
+    if request.POST.get("confirm") != "1":
+        context = {
+            **assignment.preview(accounts, application),
+            "application": application,
+            "choice": choice,
+            "next": request.POST.get("next", ""),
+        }
+        return render(request, "vulns/account_assign_confirm.html", context)
+    changed = assignment.assign(pks, application, request.user)
+    target = application.app_id if application else "Unassigned"
+    messages.success(request, f"{changed} cloud account{'s' if changed != 1 else ''} moved to {target}.")
+    return _back(request, "account_list")
+
+
+@account_assigner_required
+def account_detail(request, account_id):
+    account = get_object_or_404(CloudAccount.objects.select_related("application"), account_id=account_id)
+    vulns = account.vulnerabilities.with_owner()
+    now = timezone.now()
+    open_q = Q(status=OPEN)
+    summary = vulns.aggregate(
+        open=Count("id", filter=open_q),
+        untagged=Count("id", filter=open_q & Q(app_id="")),
+        past_slo=Count("id", filter=open_q & Q(slo_date__lt=now)),
+        remediated=Count("id", filter=Q(status=REMEDIATED)),
+        **{s.lower(): Count("id", filter=open_q & Q(severity=s)) for s in SEVERITY_ORDER},
+    )
+    breakdown = [
+        {"app_id": row["owner_app_id"], "n": row["n"]}
+        for row in vulns.filter(status=OPEN).values("owner_app_id").annotate(n=Count("id")).order_by("-n")
+    ]
+    params = request.GET.copy()
+    params.setdefault("status", "open")
+    context = {
+        "account": account,
+        "summary": summary,
+        "severity_counts": [(s, summary[s.lower()]) for s in SEVERITY_ORDER],
+        "breakdown": breakdown,
+        "applications": Application.objects.all(),
+        "history": account.assignments.select_related("changed_by")[:20],
+        "statuses": VULN_STATUSES,
+        "severities": SEVERITY_ORDER,
+        "environments": environments(vulns),
+        "params": params,
+        "cutoff": not_seen_cutoff(),
+        **paginate(request, filter_vulns(vulns, params)),
+    }
+    return render(request, "vulns/account_detail.html", context)
 
 
 # --- notifications ----------------------------------------------------------------------

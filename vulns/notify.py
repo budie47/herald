@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import Counter
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -9,17 +10,18 @@ from django.utils import timezone
 
 from .columns import SEVERITY_ORDER
 from .models import Notification, Vulnerability
-from .queries import severity_rank
+from .queries import severity_rank, vulns_for_app
 
 EMAIL_TABLE_LIMIT = 200
 
 CSV_COLUMNS = [
-    ("Alert ID", "alert_id"), ("Severity", "severity"), ("CVE", "cve"), ("Package", "package"),
-    ("Current Version", "current_version"), ("Recommended Version", "recommended_version"),
-    ("Image", "image"), ("Asset ID", "asset_id"), ("Asset Name", "asset_name"), ("Environment", "environment"),
+    ("Alert ID", "alert_id"), ("Provider", "provider"), ("Account ID", "account_number"),
+    ("Account Name", "account_name"), ("App ID from scan", "app_id"), ("Severity", "severity"), ("CVE ID", "cve"),
+    ("Package", "package"), ("Current Version", "current_version"), ("Recommended Version", "recommended_version"),
+    ("Image", "image"), ("Asset ID", "asset_id"), ("Instance", "instance"), ("Environment", "environment"),
     ("Cluster", "cluster"), ("Namespace", "namespace"), ("First Seen", "first_seen"), ("Last Scan", "last_scan"),
     ("Days Open", "days_open"), ("SLO Date", "slo_date"), ("Past SLO", "slo_overdue"),
-    ("Exception", "exception"), ("RITM Number", "ritm"), ("CVE Description", "cve_description"),
+    ("Exception", "exception"), ("Exception RITM", "ritm"), ("CVE Description", "cve_description"),
 ]
 
 
@@ -55,11 +57,13 @@ def send_app_notification(app, user):
 
     now = timezone.now()
     open_vulns = list(
-        Vulnerability.objects.filter(app_id=app.app_id, status=Vulnerability.OPEN)
+        vulns_for_app(app.app_id)
+        .filter(status=Vulnerability.OPEN)
+        .select_related("cloud_account")
         .annotate(sev_rank=severity_rank())
         .order_by("sev_rank", "slo_date", "alert_id")
     )
-    counts = Vulnerability.objects.filter(app_id=app.app_id, status=Vulnerability.OPEN).aggregate(
+    counts = vulns_for_app(app.app_id).filter(status=Vulnerability.OPEN).aggregate(
         **{s.lower(): Count("id", filter=Q(severity=s)) for s in SEVERITY_ORDER},
         past_slo=Count("id", filter=Q(slo_date__lt=now)),
     )
@@ -68,6 +72,7 @@ def send_app_notification(app, user):
         "total": len(open_vulns),
         "severity_counts": [(s, counts[s.lower()]) for s in SEVERITY_ORDER],
         "past_slo": counts["past_slo"],
+        "account_counts": Counter(f"{v.account_name} ({v.account_number})" for v in open_vulns).most_common(),
         "vulns": open_vulns[:EMAIL_TABLE_LIMIT],
         "limit": EMAIL_TABLE_LIMIT,
         "truncated": len(open_vulns) > EMAIL_TABLE_LIMIT,

@@ -29,14 +29,14 @@
       <li>Upload one or more files — a whole export split into batches is fine. They are held in a <strong>draft import</strong>; live data does not change. A later file replaces an earlier row with the same Alert ID.</li>
       <li><strong>Review &amp; finalize</strong> shows exactly what will change, then applies it. Or discard it.</li>
     </ol>
-    <p>An open vulnerability is marked <strong>remediated</strong> only when the import contains a <strong>newer scan of the same asset</strong> (by <code>Asset ID</code> and <code>Last Scan</code>) without that alert. Assets not in the import are never touched, re-uploading an older file changes nothing, and a rejected (unreadable) row never counts as evidence of a fix.</p>
+    <p>An open vulnerability is marked <strong>remediated</strong> only when the import contains a <strong>newer scan of the same asset</strong> (by <code>Account ID</code>, <code>Asset ID</code> and <code>Last Scan</code>) without that alert. Assets not in the import are never touched, re-uploading an older file changes nothing, and a rejected (unreadable) row never counts as evidence of a fix.</p>
     <p>If a remediated alert appears in a newer scan it is <strong>reopened</strong>. Open alerts whose asset has no newer scan for the configured number of days are flagged <span class="badge text-bg-warning">Not seen</span> for review — not counted as fixed.</p>
     <details>
-      <summary>Expected columns ({{ columns|length }}) — <em>Alert ID</em> and <em>App ID</em> are required</summary>
+      <summary>Expected columns ({{ columns|length }}) — <em>Alert ID</em>, <em>Account ID</em> and <em>Account Name</em> are required</summary>
       <div class="row row-cols-2 row-cols-md-3 g-1 mt-1">
         {% for label, key, kind in columns %}<div class="col"><code>{{ label }}</code>{% if kind != "text" %} <span class="text-muted">({{ kind }})</span>{% endif %}</div>{% endfor %}
       </div>
-      <p class="mt-2 mb-0 text-muted">Matched ignoring case and spaces; “Enviroment” is accepted for Environment.</p>
+      <p class="mt-2 mb-0 text-muted">Matched ignoring case and spaces; both “Enviroment” and “Environment” are accepted. Alerts with no App ID follow the App ID assigned to their cloud account.</p>
     </details>
   </div></div></div>
 </div>

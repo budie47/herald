@@ -8,10 +8,13 @@ from datetime import date, datetime, time, timedelta, timezone
 from dateutil import parser as dateparser
 from openpyxl import load_workbook
 
-from .columns import BOOL, DATE, HEADER_MAP, LABELS, NUMBER, REQUIRED, SEVERITY_ALIASES, TYPES, normalize_header
+from .columns import (
+    BOOL, DATE, HEADER_MAP, LABELS, NUMBER, PROVIDER_ALIASES, REQUIRED, SEVERITY_ALIASES, TYPES, normalize_header,
+)
 
 HEADER_SCAN_ROWS = 50
-BLANKS = {"", "-", "n/a", "na", "none", "null", "nan"}
+BLANKS = {"", "-", "n/a", "na", "none", "null", "nan", "unknown"}
+GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 FALSE_WORDS = BLANKS | {"no", "n", "false", "0", "f"}
 EXCEL_EPOCH = datetime(1899, 12, 30)
 DATE_FORMATS = [
@@ -133,6 +136,30 @@ def normalize_severity(text):
     return SEVERITY_ALIASES.get(text.strip().lower(), text.strip().title())
 
 
+def normalize_provider(text, account_id):
+    """Uses the Provider column, or recognizes an AWS account number / Azure subscription GUID when it is blank."""
+    cleaned = (text or "").strip()
+    if cleaned:
+        return PROVIDER_ALIASES.get(re.sub(r"[\s_-]+", "", cleaned).lower(), cleaned)
+    if GUID.fullmatch(account_id or ""):
+        return "Azure"
+    if re.fullmatch(r"\d{1,12}", account_id or ""):
+        return "AWS"
+    return ""
+
+
+def normalize_account_id(text, provider):
+    """Azure GUIDs are lower-cased; AWS numbers get back the leading zeros Excel removes."""
+    value = (text or "").strip()
+    if re.fullmatch(r"\d+(\.\d+)?[eE]\+?\d+", value):
+        raise ValueError(f"Account ID: '{value}' was rounded by Excel; export the column as text")
+    if GUID.fullmatch(value):
+        return value.lower()
+    if provider == "AWS" and re.fullmatch(r"\d{1,12}", value):
+        return value.zfill(12)
+    return value
+
+
 def convert(key, raw):
     """Returns a JSON-friendly value: dates become ISO strings in UTC."""
     kind = TYPES[key]
@@ -195,7 +222,7 @@ def read_rows(fileobj, filename):
 
 
 def find_header(rows):
-    """Headers can start on any row: the first row (within the first 50) that has both Alert ID and App ID."""
+    """Headers can start on any row: the first row (within the first 50) that has every required column."""
     for position, (_, values) in enumerate(rows[:HEADER_SCAN_ROWS]):
         keys = {HEADER_MAP.get(normalize_header(v)) for v in values if v is not None}
         if all(required in keys for required in REQUIRED):
@@ -208,7 +235,7 @@ def parse_file(fileobj, filename):
     position, header = find_header(rows)
     if position is None:
         raise FileFormatError(
-            f"No header row with both 'Alert ID' and 'App ID' was found in the first {HEADER_SCAN_ROWS} rows."
+            f"No header row with 'Alert ID', 'Account ID' and 'Account Name' was found in the first {HEADER_SCAN_ROWS} rows."
         )
 
     result = ParseResult(header_row=rows[position][0])
@@ -237,8 +264,17 @@ def parse_file(fileobj, filename):
             except ValueError as exc:
                 record[key] = None
                 problems.append(str(exc))
-        if not record.get("app_id"):
-            problems.insert(0, "App ID is missing")
+        record["provider"] = normalize_provider(record.get("provider"), record.get("account_id"))
+        try:
+            record["account_id"] = normalize_account_id(record.get("account_id"), record["provider"])
+        except ValueError as exc:
+            record["account_id"] = ""
+            problems.append(str(exc))
+        else:
+            if not record["account_id"]:
+                problems.insert(0, "Account ID is missing")
+        if not record.get("account_name"):
+            problems.insert(0, "Account Name is missing")
         if not record.get("alert_id"):
             problems.insert(0, "Alert ID is missing")
         if problems:
@@ -247,6 +283,7 @@ def parse_file(fileobj, filename):
                     "row": row_number,
                     "reason": "; ".join(problems),
                     "alert_id": record.get("alert_id") or "",
+                    "account_id": record.get("account_id") or "",
                     "asset_id": record.get("asset_id") or "",
                 }
             )

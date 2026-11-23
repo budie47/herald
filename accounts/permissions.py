@@ -16,6 +16,19 @@ def admin_required(view):
     return wrapper
 
 
+def account_assigner_required(view):
+    """Superadmin, Administrator and Operation."""
+
+    @wraps(view)
+    @login_required
+    def wrapper(request, *args, **kwargs):
+        if not request.user.can_assign_accounts:
+            raise PermissionDenied
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
 def superadmin_required(view):
     @wraps(view)
     @login_required

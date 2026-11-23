@@ -2,7 +2,7 @@
 
 Rules
 - Vulnerabilities are matched across uploads by Alert ID.
-- An open alert is marked remediated only when the same Asset ID has a newer Last Scan without that alert.
+- An open alert is marked remediated only when the same account + Asset ID has a newer Last Scan without that alert.
   Assets missing from an upload are left untouched.
 - Rows older than what is stored are skipped, so re-uploading an older file changes nothing.
 - A remediated alert that appears in a scan newer than the one that proved the fix is reopened.
@@ -10,7 +10,7 @@ Rules
 """
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -18,12 +18,12 @@ from django.utils import timezone
 from core.models import AppSettings
 
 from .columns import MODEL_FIELDS, TYPES, DATE
-from .models import ImportFile, ImportRun, StagedRow, Vulnerability
+from .models import CloudAccount, ImportFile, ImportRun, StagedRow, Vulnerability
 from .parsing import parse_file
 
 CHUNK = 2000
 UPDATE_FIELDS = MODEL_FIELDS + [
-    "data", "status", "last_seen", "remediated_at", "remediated_import", "reopened_at", "updated_import", "updated_at",
+    "cloud_account", "data", "status", "last_seen", "remediated_at", "remediated_import", "reopened_at", "updated_import", "updated_at",
 ]
 
 
@@ -79,7 +79,7 @@ def add_file(run, uploaded, user):
                 file=import_file,
                 row_number=record.pop("_row"),
                 alert_id=alert_id,
-                app_id=record["app_id"],
+                app_id=record.get("app_id") or "",
                 asset_id=record.get("asset_id") or "",
                 last_scan=parse_dt(record.get("last_scan")),
                 data=record,
@@ -114,11 +114,26 @@ class Plan:
     skipped: list = field(default_factory=list)  # [(StagedRow, Vulnerability)]
     remediated: list = field(default_factory=list)  # [(Vulnerability, new_scan_datetime)]
     assets: int = 0
-    protected_assets: set = field(default_factory=set)
+    protected_assets: set = field(default_factory=set)  # {(account_id, asset_id)}
+    protected_accounts: set = field(default_factory=set)  # rejected row had an account but no asset
+    protected_asset_ids: set = field(default_factory=set)  # rejected row had an asset but no account
+    protect_all: bool = False  # rejected row with neither: it could belong to any asset
 
     @property
-    def remediated_by_app(self):
-        return Counter(v.app_id for v, _ in self.remediated).most_common()
+    def remediated_by_account(self):
+        return Counter(v.account_name for v, _ in self.remediated).most_common()
+
+    @property
+    def protected_count(self):
+        return len(self.protected_assets) + len(self.protected_accounts) + len(self.protected_asset_ids)
+
+    def is_protected(self, account_id, asset_id):
+        return (
+            self.protect_all
+            or (account_id, asset_id) in self.protected_assets
+            or account_id in self.protected_accounts
+            or asset_id in self.protected_asset_ids
+        )
 
 
 def build_plan(run):
@@ -128,16 +143,24 @@ def build_plan(run):
     protected_alerts = set()
     for import_file in run.files.all():
         for error in import_file.errors:
-            if error.get("asset_id"):
-                plan.protected_assets.add(error["asset_id"])
             if error.get("alert_id"):
                 protected_alerts.add(error["alert_id"])
+            account_id, asset_id = error.get("account_id"), error.get("asset_id")
+            if account_id and asset_id:
+                plan.protected_assets.add((account_id, asset_id))
+            elif account_id:
+                plan.protected_accounts.add(account_id)
+            elif asset_id:
+                plan.protected_asset_ids.add(asset_id)
+            else:
+                plan.protect_all = True
 
     asset_scan = {}
     for row in staged.values():
-        if row.asset_id and row.last_scan and (row.asset_id not in asset_scan or row.last_scan > asset_scan[row.asset_id]):
-            asset_scan[row.asset_id] = row.last_scan
-    plan.assets = len({row.asset_id for row in staged.values() if row.asset_id})
+        key = (row.account_id, row.asset_id)
+        if row.asset_id and row.last_scan and (key not in asset_scan or row.last_scan > asset_scan[key]):
+            asset_scan[key] = row.last_scan
+    plan.assets = len({(row.account_id, row.asset_id) for row in staged.values() if row.asset_id})
 
     existing = {}
     for alert_ids in chunks(staged):
@@ -159,12 +182,15 @@ def build_plan(run):
         else:
             plan.updated.append((row, vuln))
 
-    for asset_ids in chunks(asset_scan):
+    for asset_ids in chunks({asset_id for _, asset_id in asset_scan}):
         candidates = Vulnerability.objects.filter(status=Vulnerability.OPEN, asset_id__in=asset_ids)
-        for vuln in candidates:
-            if vuln.alert_id in staged or vuln.alert_id in protected_alerts or vuln.asset_id in plan.protected_assets:
+        for vuln in candidates.select_related("cloud_account"):
+            key = (vuln.account_number, vuln.asset_id)
+            if key not in asset_scan or vuln.alert_id in staged or vuln.alert_id in protected_alerts:
                 continue
-            new_scan = asset_scan[vuln.asset_id]
+            if plan.is_protected(*key):
+                continue
+            new_scan = asset_scan[key]
             if vuln.last_scan and new_scan > vuln.last_scan:
                 plan.remediated.append((vuln, new_scan))
     plan.remediated.sort(key=lambda item: (item[0].app_id, item[0].alert_id))
@@ -174,8 +200,36 @@ def build_plan(run):
 # --- applying ---------------------------------------------------------------------------
 
 
-def _apply_row(vuln, row, settings):
+def _sync_accounts(rows):
+    """Creates new accounts and refreshes names/providers from the newest applied row of each account."""
+    latest = {}
+    for row in sorted(rows, key=lambda r: r.last_scan or datetime.min.replace(tzinfo=dt_timezone.utc)):
+        latest[row.account_id] = row.data
+    accounts = {}
+    for account_ids in chunks(latest):
+        accounts.update({a.account_id: a for a in CloudAccount.objects.filter(account_id__in=account_ids)})
+    created, changed = [], []
+    for account_id, data in latest.items():
+        account = accounts.get(account_id)
+        if account is None:
+            created.append(
+                CloudAccount(account_id=account_id, account_name=data["account_name"], provider=data.get("provider") or "")
+            )
+        elif account.account_name != data["account_name"] or (data.get("provider") and account.provider != data["provider"]):
+            account.account_name = data["account_name"]
+            account.provider = data.get("provider") or account.provider
+            account.updated_at = timezone.now()
+            changed.append(account)
+    CloudAccount.objects.bulk_create(created, batch_size=1000)
+    CloudAccount.objects.bulk_update(changed, ["account_name", "provider", "updated_at"], batch_size=500)
+    for account_ids in chunks(latest):
+        accounts.update({a.account_id: a for a in CloudAccount.objects.filter(account_id__in=account_ids)})
+    return accounts
+
+
+def _apply_row(vuln, row, settings, accounts):
     data = row.data
+    vuln.cloud_account = accounts[row.account_id]
     for key in MODEL_FIELDS:
         value = data.get(key)
         if TYPES[key] == DATE:
@@ -194,10 +248,10 @@ def _default_slo(first_seen, severity, settings):
     return first_seen + timedelta(days=days) if days is not None and first_seen else None
 
 
-def _new_vuln(row, run, settings, now):
-    first_seen = parse_dt(row.data.get("first_detected")) or row.last_scan or now
+def _new_vuln(row, run, settings, now, accounts):
+    first_seen = parse_dt(row.data.get("alert_opened")) or row.last_scan or now
     vuln = Vulnerability(alert_id=row.alert_id, first_seen=first_seen, last_seen=row.last_scan or now, created_import=run)
-    _apply_row(vuln, row, settings)
+    _apply_row(vuln, row, settings, accounts)
     vuln.updated_import = run
     return vuln
 
@@ -211,15 +265,16 @@ def finalize(run, user):
     settings = AppSettings.load()
     now = timezone.now()
 
-    Vulnerability.objects.bulk_create([_new_vuln(row, run, settings, now) for row in plan.new], batch_size=1000)
+    accounts = _sync_accounts([*plan.new, *(row for row, _ in plan.updated), *(row for row, _ in plan.reopened)])
+    Vulnerability.objects.bulk_create([_new_vuln(row, run, settings, now, accounts) for row in plan.new], batch_size=1000)
 
     changed = []
     for row, vuln in plan.updated:
-        _apply_row(vuln, row, settings)
+        _apply_row(vuln, row, settings, accounts)
         vuln.updated_import, vuln.updated_at = run, now
         changed.append(vuln)
     for row, vuln in plan.reopened:
-        _apply_row(vuln, row, settings)
+        _apply_row(vuln, row, settings, accounts)
         vuln.status = Vulnerability.OPEN
         vuln.reopened_at = row.last_scan or now
         vuln.remediated_at = None

@@ -25,12 +25,14 @@
     .timeline-item.failed::before { background: #dc3545; box-shadow: 0 0 0 2px #dc3545; }
     .text-overdue { color: #dc3545; font-weight: 600; }
     .nowrap { white-space: nowrap; }
+    .navbar .nav-link, .navbar .small { white-space: nowrap; }
+    @media (max-width: 1599.98px) { .navbar .nav-link > i, .navbar .role-badge { display: none; } }
     .settings-nav .list-group-item.active { background: #212529; border-color: #212529; }
   </style>
 </head>
 <body>
 {% if user.is_authenticated and not user.must_change_password %}
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+<nav class="navbar navbar-expand-xl navbar-dark bg-dark">
   <div class="container-fluid px-4">
     <a class="navbar-brand fw-bold" href="{% url 'dashboard' %}"><i class="bi bi-shield-check"></i> Herald</a>
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainnav"><span class="navbar-toggler-icon"></span></button>
@@ -38,6 +40,9 @@
       <ul class="navbar-nav me-auto">
         <li class="nav-item"><a class="nav-link {% active 'dashboard' %}" href="{% url 'dashboard' %}"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
         <li class="nav-item"><a class="nav-link {% active 'app_' %}" href="{% url 'app_list' %}"><i class="bi bi-grid-3x3-gap"></i> Applications</a></li>
+        {% if user.can_assign_accounts %}
+        <li class="nav-item"><a class="nav-link {% active 'account_' %}" href="{% url 'account_list' %}"><i class="bi bi-cloud"></i> Cloud Accounts{% if unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}</a></li>
+        {% endif %}
         {% if user.is_admin %}
         <li class="nav-item"><a class="nav-link {% active 'import_' %}" href="{% url 'import_home' %}"><i class="bi bi-cloud-upload"></i> Upload Data{% if draft_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a></li>
         {% endif %}
@@ -49,7 +54,7 @@
       <div class="d-flex align-items-center gap-2 text-white-50 small">
         <i class="bi bi-person-circle"></i>
         <span class="text-white">{{ user.email }}</span>
-        {% if user.role %}<span class="badge text-bg-secondary">{{ user.role.name }}</span>{% endif %}
+        {% if user.role %}<span class="badge text-bg-secondary role-badge">{{ user.role.name }}</span>{% endif %}
         · <a class="link-light" href="{% url 'password_change' %}">Change password</a> ·
         <form method="post" action="{% url 'logout' %}" class="d-inline">{% csrf_token %}<button class="btn btn-link link-light p-0 small align-baseline">Sign out</button></form>
       </div>

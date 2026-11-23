@@ -13,15 +13,18 @@
     <td style="padding:10px 16px;border-radius:6px;text-align:center;border:2px solid #dc3545;color:#dc3545">
       <div style="font-size:22px;font-weight:bold">{{ past_slo }}</div><div style="font-size:12px">Past SLO</div></td>
   </tr></table>
+  <p style="margin-bottom:4px"><strong>Cloud accounts</strong></p>
+  <ul style="margin-top:0">{% for account, n in account_counts %}<li>{{ account }}: {{ n }}</li>{% endfor %}</ul>
   <p style="color:#6c757d">{% if truncated %}The first {{ limit }} of {{ total }} are listed below. {% endif %}All open vulnerabilities are in the attached CSV.</p>
   <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
     <tr style="background:#212529;color:#fff;text-align:left">
-      <th>Severity</th><th>CVE</th><th>Package</th><th>Current &rarr; Recommended</th><th>Image / Asset</th><th>Env</th><th>Days open</th><th>SLO date</th>
+      <th>Severity</th><th>CVE</th><th>Account</th><th>Package</th><th>Current &rarr; Recommended</th><th>Image / Asset</th><th>Env</th><th>Days open</th><th>SLO date</th>
     </tr>
     {% for v in vulns %}
     <tr style="border-bottom:1px solid #dee2e6">
       <td>{{ v.severity }}</td>
       <td>{% if v.cve_url %}<a href="{{ v.cve_url }}">{{ v.cve }}</a>{% else %}{{ v.cve }}{% endif %}</td>
+      <td>{{ v.account_name }}<br><span style="color:#6c757d">{{ v.account_number }}</span></td>
       <td>{{ v.package }}</td>
       <td>{{ v.current_version }} &rarr; {{ v.recommended_version|default:"no fix" }}</td>
       <td>{{ v.image|default:v.asset_id }}</td>

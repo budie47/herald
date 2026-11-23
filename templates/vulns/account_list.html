@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% load herald_tags %}
+{% block title %}Cloud Accounts{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Cloud Accounts</h1>
+  {% if user.is_admin %}<a class="btn btn-outline-primary btn-sm" href="{% url 'app_create' %}?next={{ request.get_full_path|urlencode }}"><i class="bi bi-plus-lg"></i> Register application</a>{% endif %}
+</div>
+<p class="text-muted small">AWS accounts and Azure subscriptions. Alerts with no App ID follow the App ID assigned to their account. An alert's own App ID always wins.</p>
+
+<ul class="nav nav-tabs mb-3">
+  {% for value, label in states %}<li class="nav-item"><a class="nav-link {% if state == value %}active{% endif %}" href="{% qs state=value page=None %}">{{ label }}{% if value == "needs" and unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}</a></li>{% endfor %}
+</ul>
+
+<form method="get" class="row g-2 mb-3">
+  <input type="hidden" name="state" value="{{ state }}"><input type="hidden" name="per_page" value="{{ per_page }}">
+  <div class="col-md-4"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="Account name, Account ID or App ID" aria-label="Search cloud accounts"></div>
+  <div class="col-6 col-md-2"><select name="provider" class="form-select form-select-sm" aria-label="Provider"><option value="">All providers</option>{% for p in providers %}<option {% if params.provider == p %}selected{% endif %}>{{ p }}</option>{% endfor %}</select></div>
+  <div class="col-6 col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'account_list' %}?state={{ state }}">Reset</a></div>
+</form>
+
+<form method="post" action="{% url 'account_assign' %}">{% csrf_token %}
+<input type="hidden" name="next" value="{{ request.get_full_path }}">
+<div class="card"><div class="card-body">
+  <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+    <select name="application" class="form-select form-select-sm w-auto" aria-label="App ID to assign" required>
+      <option value="">Choose App ID…</option>
+      {% for app in applications %}<option value="{{ app.pk }}">{{ app.app_id }}{% if app.name %} · {{ app.name }}{% endif %}</option>{% endfor %}
+      <option value="none">Remove assignment</option>
+    </select>
+    <button class="btn btn-sm btn-primary" id="assign-btn" disabled><i class="bi bi-link-45deg"></i> Assign selected (<span id="assign-count">0</span>)</button>
+    {% if not applications %}<span class="small text-muted">Register an application first.</span>{% endif %}
+  </div>
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0">
+    <thead><tr><th><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all"></th><th>Provider</th><th>Account name</th><th>Account ID</th><th>Assigned App ID</th><th>App IDs seen</th><th class="text-end">Untagged open</th><th class="text-end">Critical + High</th><th class="text-end">Past SLO</th><th class="text-end">Total open</th></tr></thead>
+    <tbody>
+    {% for a in page %}
+      <tr>
+        <td><input type="checkbox" class="form-check-input row-check" name="account_ids" value="{{ a.pk }}" aria-label="Select {{ a.account_name }}"></td>
+        <td>{{ a.provider|default:"—" }}</td>
+        <td><a href="{% url 'account_detail' a.account_id %}">{{ a.account_name }}</a></td>
+        <td class="font-monospace small">{{ a.account_id }}</td>
+        <td>{% if a.application %}<a href="{% url 'app_detail' a.application.app_id %}">{{ a.application.app_id }}</a>{% elif a.untagged_open %}<span class="badge text-bg-warning">Unassigned</span>{% else %}<span class="text-muted">Not needed</span>{% endif %}</td>
+        <td class="small">{% for id in a.app_ids %}<span class="badge text-bg-light border">{{ id }}</span> {% empty %}<span class="text-muted">none</span>{% endfor %}</td>
+        <td class="text-end fw-semibold">{{ a.untagged_open }}</td>
+        <td class="text-end {% if a.untagged_critical_high %}text-danger fw-semibold{% endif %}">{{ a.untagged_critical_high }}</td>
+        <td class="text-end {% if a.untagged_past_slo %}text-overdue{% endif %}">{{ a.untagged_past_slo }}</td>
+        <td class="text-end">{{ a.open_count }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="10" class="text-muted">No cloud accounts here.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination_outside_form.html" %}
+</div></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+  const checks = () => [...document.querySelectorAll('.row-check')];
+  const sync = () => {
+    const n = checks().filter(c => c.checked).length;
+    document.getElementById('assign-btn').disabled = n === 0;
+    document.getElementById('assign-count').textContent = n;
+  };
+  checks().forEach(c => c.addEventListener('change', sync));
+  document.getElementById('check-all').addEventListener('change', e => { checks().forEach(c => c.checked = e.target.checked); sync(); });
+</script>
+{% endblock %}

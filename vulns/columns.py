@@ -1,76 +1,74 @@
-"""The 44 scanner columns accepted by the container import.
+"""The 46 scanner columns accepted by the container import, in export order.
 
-Headers are matched ignoring case, spaces and underscores. Edit this list to match your scanner export.
+Headers are matched ignoring case, spaces and underscores.
 """
 import re
 
 TEXT, DATE, NUMBER, BOOL = "text", "date", "number", "bool"
 
 COLUMNS = [
+    ("CSB ID", "csb_id", TEXT),
     ("Alert ID", "alert_id", TEXT),
-    ("App ID", "app_id", TEXT),
-    ("App Name", "app_name", TEXT),
-    ("Asset ID", "asset_id", TEXT),
-    ("Asset Name", "asset_name", TEXT),
-    ("Asset Type", "asset_type", TEXT),
-    ("Image", "image", TEXT),
-    ("Image Tag", "image_tag", TEXT),
-    ("Image Digest", "image_digest", TEXT),
-    ("Registry", "registry", TEXT),
-    ("Repository", "repository", TEXT),
-    ("Cluster", "cluster", TEXT),
-    ("Namespace", "namespace", TEXT),
-    ("Container", "container", TEXT),
-    ("Host", "host", TEXT),
-    ("Environment", "environment", TEXT),
-    ("Cloud Provider", "cloud_provider", TEXT),
-    ("Account ID", "account_id", TEXT),
-    ("Region", "region", TEXT),
-    ("OS", "os", TEXT),
-    ("OS Version", "os_version", TEXT),
-    ("CVE", "cve", TEXT),
-    ("CVE Description", "cve_description", TEXT),
-    ("CVE Link", "cve_link", TEXT),
-    ("Severity", "severity", TEXT),
-    ("CVSS Score", "cvss_score", NUMBER),
-    ("CVSS Vector", "cvss_vector", TEXT),
-    ("EPSS Score", "epss_score", NUMBER),
-    ("Exploit Available", "exploit_available", BOOL),
-    ("Package", "package", TEXT),
-    ("Package Type", "package_type", TEXT),
-    ("Package Path", "package_path", TEXT),
-    ("Current Version", "current_version", TEXT),
-    ("Recommended Version", "recommended_version", TEXT),
-    ("Fix Status", "fix_status", TEXT),
-    ("Published Date", "published_date", DATE),
-    ("First Detected", "first_detected", DATE),
     ("Last Scan", "last_scan", DATE),
+    ("Severity", "severity", TEXT),
+    ("Alert Opened", "alert_opened", DATE),
+    ("Days Open", "days_open", NUMBER),
     ("SLO Date", "slo_date", DATE),
     ("Exception", "exception", BOOL),
-    ("Exception Reason", "exception_reason", TEXT),
-    ("Exception Expiry", "exception_expiry", DATE),
-    ("RITM Number", "ritm", TEXT),
-    ("Risk Factors", "risk_factors", TEXT),
+    ("Exception RITM", "ritm", TEXT),
+    ("Account ID", "account_id", TEXT),
+    ("Account Name", "account_name", TEXT),
+    ("Provider", "provider", TEXT),
+    ("Enviroment", "environment", TEXT),
+    ("Asset ID", "asset_id", TEXT),
+    ("Asset Type", "asset_type", TEXT),
+    ("CVE ID", "cve", TEXT),
+    ("CVE Description", "cve_description", TEXT),
+    ("CVE Link", "cve_link", TEXT),
+    ("Cluster", "cluster", TEXT),
+    ("Namespace", "namespace", TEXT),
+    ("Instance", "instance", TEXT),
+    ("Repository", "repository", TEXT),
+    ("Registry", "registry", TEXT),
+    ("Image", "image", TEXT),
+    ("Image Tag", "image_tag", TEXT),
+    ("Image Created", "image_created", DATE),
+    ("Package", "package", TEXT),
+    ("Current Version", "current_version", TEXT),
+    ("Recommended Version", "recommended_version", TEXT),
+    ("Package Path", "package_path", TEXT),
+    ("Layer ID", "layer_id", TEXT),
+    ("Layer Instruction", "layer_instruction", TEXT),
+    ("OS", "os", TEXT),
+    ("OS Version", "os_version", TEXT),
+    ("OS End of Life", "os_end_of_life", DATE),
+    ("Participating Firm", "participating_firm", TEXT),
+    ("Country", "country", TEXT),
+    ("CMS", "cms", TEXT),
+    ("Function", "function", TEXT),
+    ("App ID", "app_id", TEXT),
+    ("App Service", "app_service", TEXT),
+    ("Business Service", "business_service", TEXT),
+    ("Department", "department", TEXT),
+    ("Service Line", "service_line", TEXT),
+    ("Data Classification", "data_classification", TEXT),
+    ("Data Qualification", "data_qualification", TEXT),
 ]
-assert len(COLUMNS) == 44
+assert len(COLUMNS) == 46
 
-REQUIRED = ("alert_id", "app_id")
+REQUIRED = ("alert_id", "account_id", "account_name")
 LABELS = {key: label for label, key, _ in COLUMNS}
 TYPES = {key: kind for _, key, kind in COLUMNS}
 
 # Alternative spellings seen in real exports.
 ALIASES = {
-    "enviroment": "environment",
-    "env": "environment",
+    "environment": "environment",
+    "cve": "cve",
     "ritm": "ritm",
-    "cveid": "cve",
-    "fixedversion": "recommended_version",
-    "fixversion": "recommended_version",
-    "installedversion": "current_version",
-    "packageversion": "current_version",
-    "lastscanned": "last_scan",
-    "lastscandate": "last_scan",
-    "firstseen": "first_detected",
+    "ritmnumber": "ritm",
+    "subscriptionid": "account_id",
+    "subscriptionname": "account_name",
+    "cloudprovider": "provider",
 }
 
 
@@ -83,9 +81,9 @@ HEADER_MAP.update(ALIASES)
 
 # Scanner columns stored as real database columns (for filtering/searching); everything is also kept in `data`.
 MODEL_FIELDS = [
-    "app_id", "asset_id", "asset_name", "image", "cluster", "namespace", "environment", "cve",
+    "app_id", "asset_id", "instance", "image", "cluster", "namespace", "environment", "cve",
     "cve_description", "cve_link", "severity", "package", "current_version", "recommended_version",
-    "exception", "exception_reason", "ritm", "slo_date", "last_scan",
+    "exception", "ritm", "slo_date", "last_scan",
 ]
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low"]
@@ -95,4 +93,8 @@ SEVERITY_ALIASES = {
     "medium": "Medium", "moderate": "Medium", "med": "Medium",
     "low": "Low", "minor": "Low",
     "info": "Informational", "informational": "Informational", "negligible": "Informational",
+}
+PROVIDER_ALIASES = {
+    "aws": "AWS", "amazon": "AWS", "amazonwebservices": "AWS",
+    "azure": "Azure", "microsoftazure": "Azure", "msazure": "Azure",
 }
