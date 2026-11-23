@@ -9,24 +9,29 @@ from django.db import transaction
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from accounts.permissions import account_assigner_required, admin_required, can_view_app
+from accounts.permissions import (
+    account_assigner_required, admin_required, can_view_app, response_recorder_required,
+)
 from core.models import AppSettings
 
-from . import assignment, lifecycle
+from . import assignment, followups, lifecycle
 from .columns import COLUMNS, SEVERITY_ORDER
-from .forms import ApplicationForm, UploadForm
-from .models import Application, CloudAccount, ImportRun, LegacyUpload, Notification, Vulnerability
-from .notify import NotificationNotAllowed, send_app_notification, vulns_csv
+from .forms import ApplicationForm, ResponseForm, UploadForm
+from .models import (
+    Application, CloudAccount, FollowUp, FollowUpEvent, ImportRun, LegacyUpload, Notification, Vulnerability,
+)
+from .notify import NotificationNotAllowed, vulns_csv
 from .parsing import FileFormatError
 from .queries import (
-    OPEN, REMEDIATED, VULN_STATUSES, application_rows, environments, filter_vulns, not_seen_cutoff, paginate,
-    scoped_apps, scoped_notifications, scoped_vulns, vulns_for_app,
+    OPEN, REMEDIATED, VULN_STATUSES, application_rows, environments, filter_vulns, followup_cutoff, not_seen_cutoff,
+    overdue_q, paginate, scoped_apps, scoped_followups, scoped_notifications, scoped_vulns, vulns_for_app,
 )
 
 
@@ -81,7 +86,12 @@ def dashboard(request):
         row["severities"] = [(s, row[s.lower()]) for s in SEVERITY_ORDER]
 
     owned = len(finding_ids & registered_ids)
+    open_followups = scoped_followups(request.user).exclude(status=FollowUp.CLOSED)
     context = {
+        "followups_waiting": open_followups.filter(status=FollowUp.WAITING).count(),
+        "followups_overdue": open_followups.filter(overdue_q(followup_cutoff())).count(),
+        "followups_escalated": open_followups.filter(status=FollowUp.ESCALATED).count(),
+        "followup_days": AppSettings.load().followup_overdue_days,
         "open_count": open_vulns.count(),
         "apps_registered": len(registered_ids),
         "apps_with_open": len(open_app_ids),
@@ -120,7 +130,13 @@ def dashboard(request):
 
 APP_STATUSES = [
     ("", "All"), ("with_vulns", "With vulnerabilities"), ("registered", "Registered"), ("unregistered", "Unregistered"),
-    ("no_email", "No email"), ("not_rescanned", "Not rescanned"), ("all_remediated", "All remediated"),
+    ("no_email", "No support email"), ("not_rescanned", "Not rescanned"), ("all_remediated", "All remediated"),
+]
+
+
+FOLLOWUP_FILTERS = [
+    ("", "Any"), ("waiting", "Awaiting response"), ("overdue", "Overdue"), ("escalated", "Escalated"),
+    ("responded", "Responded"), ("none", "No open follow-up"),
 ]
 
 
@@ -132,6 +148,7 @@ def app_list(request):
         **paginate(request, rows),
         "total_rows": len(rows),
         "statuses": APP_STATUSES,
+        "followup_filters": FOLLOWUP_FILTERS,
         "severities": SEVERITY_ORDER,
         "environments": environments(scoped_vulns(request.user)),
         "unregistered_count": sum(1 for r in all_rows if not r["registered"]),
@@ -180,6 +197,7 @@ def app_delete(request, app_id):
     if request.method == "POST":
         with transaction.atomic():
             assignment.assign(list(app.cloud_accounts.values_list("pk", flat=True)), None, request.user)
+            followups.close_for_deleted_app(app, request.user)
             app.delete()
         messages.success(
             request, f"Application {app_id} deleted. Vulnerabilities were kept, and its accounts are unassigned."
@@ -226,7 +244,22 @@ def app_detail(request, app_id):
     for account in cloud_accounts:
         account.app_open = open_by_account.get(account.pk, 0)
         account.is_assigned = bool(app and account.application_id == app.pk)
+    follow_up = None
+    follow_up_events = []
+    if app:
+        follow_up = app.follow_ups.exclude(status=FollowUp.CLOSED).first()
+        if follow_up:
+            follow_up.overdue = follow_up.is_overdue(followup_cutoff())
+        follow_up_events = list(
+            FollowUpEvent.objects.filter(follow_up__application=app).select_related("actor", "notification", "follow_up")[:30]
+        )
+        for event in follow_up_events:  # remarks and responses are internal unless sent in an email
+            event.show_note = request.user.can_record_responses or event.include_in_email
     context = {
+        "follow_up": follow_up,
+        "follow_up_events": follow_up_events,
+        "response_form": ResponseForm(initial={"responded_on": timezone.localdate()}),
+        "followup_days": AppSettings.load().followup_overdue_days,
         "cloud_accounts": sorted(cloud_accounts, key=lambda a: (-a.app_open, a.account_name)),
         "app": app,
         "app_id": app_id,
@@ -378,19 +411,35 @@ def account_detail(request, account_id):
 # --- notifications ----------------------------------------------------------------------
 
 
+def _remark(request):
+    return (request.POST.get("remark") or "").strip(), request.POST.get("include_in_email") == "on"
+
+
+NOTIFICATION_LABELS = {
+    Notification.SUPPORT: "Notification", Notification.REMINDER: "Reminder", Notification.ESCALATION: "Escalation",
+}
+
+
+def _report_send(request, app_id, log):
+    label = NOTIFICATION_LABELS.get(log.kind, "Notification")
+    if log.status == Notification.SENT:
+        copied = f", copied to {log.cc}" if log.cc else ""
+        messages.success(request, f"{label} for {app_id} sent to {log.recipients}{copied} ({log.vuln_count} vulnerabilities).")
+    else:
+        messages.error(request, f"{label} for {app_id} failed, so its status did not change: {log.error}")
+
+
 @admin_required
 @require_POST
 def app_notify(request, app_id):
     app = Application.objects.filter(app_id=app_id).first()
+    remark, include = _remark(request)
     try:
-        log = send_app_notification(app, request.user)
+        log = followups.notify_support(app, request.user, remark, include)
     except NotificationNotAllowed as exc:
         messages.error(request, str(exc))
     else:
-        if log.status == Notification.SENT:
-            messages.success(request, f"Notification for {app_id} sent to {log.recipients} ({log.vuln_count} vulnerabilities).")
-        else:
-            messages.error(request, f"Notification for {app_id} failed: {log.error}")
+        _report_send(request, app_id, log)
     if app:
         return _back(request, redirect("app_detail", app_id=app_id).url)
     return _back(request, "app_list")
@@ -403,11 +452,12 @@ def notify_bulk(request):
     if not app_ids:
         messages.warning(request, "Tick at least one application to notify.")
         return _back(request, "app_list")
+    remark, include = _remark(request)
     apps = {a.app_id: a for a in Application.objects.filter(app_id__in=app_ids)}
     sent, failed, skipped = [], [], []
     for app_id in app_ids:
         try:
-            log = send_app_notification(apps.get(app_id), request.user)
+            log = followups.notify_support(apps.get(app_id), request.user, remark, include)
         except NotificationNotAllowed as exc:
             skipped.append(f"{app_id} ({exc})")
             continue
@@ -424,15 +474,100 @@ def notify_bulk(request):
     return _back(request, "app_list")
 
 
+@admin_required
+@require_POST
+def followup_escalate(request, pk):
+    follow_up = get_object_or_404(FollowUp.objects.select_related("application"), pk=pk)
+    remark, include = _remark(request)
+    try:
+        log = followups.escalate(follow_up, request.user, remark, include)
+    except NotificationNotAllowed as exc:
+        messages.error(request, str(exc))
+    else:
+        _report_send(request, follow_up.app_id, log)
+    return _followup_back(follow_up)
+
+
+@response_recorder_required
+@require_POST
+def followup_respond(request, pk):
+    follow_up = get_object_or_404(FollowUp, pk=pk)
+    form = ResponseForm(request.POST)
+    if not form.is_valid():
+        errors = "; ".join(f"{form[name].label}: {' '.join(errs)}" for name, errs in form.errors.items())
+        messages.error(request, f"Response not saved. {errors}")
+        return _followup_back(follow_up)
+    data = form.cleaned_data
+    try:
+        followups.record_response(
+            follow_up, request.user, data["responder"], data["responded_on"], data["response"],
+            close=data["close"] and request.user.is_admin,
+        )
+        messages.success(request, "Response recorded.")
+    except NotificationNotAllowed as exc:
+        messages.error(request, str(exc))
+    return _followup_back(follow_up)
+
+
+@response_recorder_required
+@require_POST
+def followup_remark(request, pk):
+    follow_up = get_object_or_404(FollowUp, pk=pk)
+    remark, _ = _remark(request)
+    if not remark:
+        messages.warning(request, "Write a remark first.")
+    else:
+        followups.add_remark(follow_up, request.user, remark)
+        messages.success(request, "Remark added.")
+    return _followup_back(follow_up)
+
+
+@admin_required
+@require_POST
+def followup_close(request, pk):
+    follow_up = get_object_or_404(FollowUp, pk=pk)
+    remark, _ = _remark(request)
+    try:
+        followups.close(follow_up, request.user, remark)
+        messages.success(request, "Follow-up closed.")
+    except NotificationNotAllowed as exc:
+        messages.error(request, str(exc))
+    return _followup_back(follow_up)
+
+
+def _followup_back(follow_up):
+    if follow_up.application_id:
+        return redirect(reverse("app_detail", args=[follow_up.application.app_id]) + "#follow-up")
+    return redirect("notification_log")
+
+
 @login_required
 def notification_log(request):
     logs = scoped_notifications(request.user)
     q = (request.GET.get("q") or "").strip()
     if q:
-        logs = logs.filter(Q(app_id__icontains=q) | Q(recipients__icontains=q) | Q(sent_by__email__icontains=q))
+        logs = logs.filter(
+            Q(app_id__icontains=q) | Q(recipients__icontains=q) | Q(cc__icontains=q) | Q(sent_by__email__icontains=q)
+        )
     if request.GET.get("status") in (Notification.SENT, Notification.FAILED):
         logs = logs.filter(status=request.GET["status"])
-    return render(request, "vulns/notification_log.html", {**paginate(request, logs), "params": request.GET})
+    if request.GET.get("kind") in dict(Notification.KIND_CHOICES):
+        logs = logs.filter(kind=request.GET["kind"])
+    followup = request.GET.get("followup")
+    if followup == "overdue":
+        logs = logs.filter(
+            follow_up__status__in=[FollowUp.WAITING, FollowUp.ESCALATED], follow_up__waiting_since__lt=followup_cutoff()
+        )
+    elif followup in dict(FollowUp.STATUS_CHOICES):
+        logs = logs.filter(follow_up__status=followup)
+    context = {
+        **paginate(request, logs.select_related("follow_up")),
+        "params": request.GET,
+        "kinds": Notification.KIND_CHOICES,
+        "followup_statuses": FollowUp.STATUS_CHOICES,
+        "cutoff": followup_cutoff(),
+    }
+    return render(request, "vulns/notification_log.html", context)
 
 
 # --- imports ----------------------------------------------------------------------------

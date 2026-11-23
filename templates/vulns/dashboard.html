@@ -86,6 +86,15 @@
   </div></div></div>
 </div>
 
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6">Support follow-ups</h2>
+  <div class="row g-3 text-center text-md-start">
+    <div class="col-4"><a class="text-decoration-none text-reset" href="{% url 'app_list' %}?followup=waiting"><div class="stat">{{ followups_waiting }}</div><div class="small text-muted">Awaiting response</div></a></div>
+    <div class="col-4"><a class="text-decoration-none text-reset" href="{% url 'app_list' %}?followup=overdue"><div class="stat {% if followups_overdue %}text-warning{% endif %}">{{ followups_overdue }}</div><div class="small text-muted">Overdue ({{ followup_days }}+ days)</div></a></div>
+    <div class="col-4"><a class="text-decoration-none text-reset" href="{% url 'app_list' %}?followup=escalated"><div class="stat {% if followups_escalated %}text-danger{% endif %}">{{ followups_escalated }}</div><div class="small text-muted">Escalated to owner</div></a></div>
+  </div>
+</div></div>
+
 <div class="card"><div class="card-body">
   <h2 class="h6">Top 10 applications by open vulnerabilities</h2>
   <div class="table-responsive">

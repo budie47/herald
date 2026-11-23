@@ -17,7 +17,8 @@ class Role(models.Model):
         (
             OPERATION,
             "Operation",
-            "Can view the dashboard, application details and vulnerabilities, and assign cloud accounts to App IDs.",
+            "Can view the dashboard, application details and vulnerabilities, assign cloud accounts to App IDs, "
+            "and record support responses and remarks.",
         ),
         (
             USER,
@@ -123,4 +124,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     @property
     def can_assign_accounts(self):
+        return self.can_view_all
+
+    @property
+    def can_record_responses(self):
         return self.can_view_all

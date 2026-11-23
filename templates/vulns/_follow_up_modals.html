@@ -1,0 +1,48 @@
+{% if user.is_admin and app.has_email and summary.open %}
+<div class="modal fade" id="send-modal" tabindex="-1" aria-labelledby="send-title" aria-hidden="true"><div class="modal-dialog"><form class="modal-content" method="post" action="{% url 'app_notify' app_id %}">{% csrf_token %}
+  <div class="modal-header"><h2 class="modal-title h5" id="send-title">{% if follow_up %}Send reminder{% else %}Send to support{% endif %}</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+  <div class="modal-body">
+    <p class="small">{{ summary.open }} open vulnerabilit{{ summary.open|pluralize:"y,ies" }} will be emailed to
+      {% if follow_up.status == "escalated" %}<strong>{{ app.owner_email }}</strong>, copying support and extra emails{% else %}<strong>{{ app.support_email_list|join:", " }}</strong>{% if app.extra_email_list %}, copying {{ app.extra_email_list|join:", " }}{% endif %}{% endif %}.</p>
+    {% include "vulns/_remark_fields.html" with prefix="send" required=False %}
+  </div>
+  <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary">{% if follow_up %}Send reminder{% else %}Send to support{% endif %}</button></div>
+</form></div></div>
+{% endif %}
+{% if follow_up %}
+{% if user.can_record_responses %}
+<div class="modal fade" id="response-modal" tabindex="-1" aria-labelledby="response-title" aria-hidden="true"><div class="modal-dialog"><form class="modal-content" method="post" action="{% url 'followup_respond' follow_up.pk %}">{% csrf_token %}
+  <div class="modal-header"><h2 class="modal-title h5" id="response-title">Record response</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+  <div class="modal-body">
+    <div class="mb-3"><label class="form-label" for="{{ response_form.responder.id_for_label }}">{{ response_form.responder.label }}</label>{{ response_form.responder }}</div>
+    <div class="mb-3"><label class="form-label" for="{{ response_form.responded_on.id_for_label }}">{{ response_form.responded_on.label }}</label>{{ response_form.responded_on }}</div>
+    <div class="mb-3"><label class="form-label" for="{{ response_form.response.id_for_label }}">{{ response_form.response.label }}</label>{{ response_form.response }}<div class="form-text">Internal: not emailed to anyone.</div></div>
+    {% if user.is_admin %}<div class="form-check">{{ response_form.close }} <label class="form-check-label" for="{{ response_form.close.id_for_label }}">{{ response_form.close.label }}</label></div>{% endif %}
+  </div>
+  <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-success">Save response</button></div>
+</form></div></div>
+<div class="modal fade" id="remark-modal" tabindex="-1" aria-labelledby="remark-title" aria-hidden="true"><div class="modal-dialog"><form class="modal-content" method="post" action="{% url 'followup_remark' follow_up.pk %}">{% csrf_token %}
+  <div class="modal-header"><h2 class="modal-title h5" id="remark-title">Add remark</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+  <div class="modal-body"><label class="form-label" for="note-remark">Remark</label><textarea class="form-control" id="note-remark" name="remark" rows="3" required></textarea><div class="form-text">Internal: not emailed to anyone.</div></div>
+  <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary">Save remark</button></div>
+</form></div></div>
+{% endif %}
+{% if user.is_admin %}
+{% if follow_up.status != "escalated" and app.owner_email and summary.open %}
+<div class="modal fade" id="escalate-modal" tabindex="-1" aria-labelledby="escalate-title" aria-hidden="true"><div class="modal-dialog"><form class="modal-content" method="post" action="{% url 'followup_escalate' follow_up.pk %}">{% csrf_token %}
+  <div class="modal-header"><h2 class="modal-title h5" id="escalate-title">Escalate to application owner</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+  <div class="modal-body">
+    <p class="small">This emails <strong>{{ app.owner_email }}</strong> and copies the support team and extra emails.</p>
+    {% if follow_up.status == "responded" %}<div class="alert alert-info py-2 small">Support has already responded, so a reason is required.</div>{% endif %}
+    {% if follow_up.status == "responded" %}{% include "vulns/_remark_fields.html" with prefix="escalate" required=True %}{% else %}{% include "vulns/_remark_fields.html" with prefix="escalate" required=False %}{% endif %}
+  </div>
+  <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-danger">Escalate</button></div>
+</form></div></div>
+{% endif %}
+<div class="modal fade" id="close-modal" tabindex="-1" aria-labelledby="close-title" aria-hidden="true"><div class="modal-dialog"><form class="modal-content" method="post" action="{% url 'followup_close' follow_up.pk %}">{% csrf_token %}
+  <div class="modal-header"><h2 class="modal-title h5" id="close-title">Close follow-up</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+  <div class="modal-body"><label class="form-label" for="close-remark">Remark (optional)</label><textarea class="form-control" id="close-remark" name="remark" rows="2"></textarea><div class="form-text">Open vulnerabilities stay open. The next send starts a new follow-up.</div></div>
+  <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-dark">Close follow-up</button></div>
+</form></div></div>
+{% endif %}
+{% endif %}

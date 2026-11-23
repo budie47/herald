@@ -26,6 +26,11 @@ APPLICATIONS = {
     "APP-1002": ("Customer Portal", "Sample Owner B", "portal-owner@example.com", "Customer Experience", "Digital"),
     "APP-1003": ("Data Platform", "Sample Owner C", "data-owner@example.com", "Analytics", "Data Office"),
 }
+SUPPORT = {
+    "APP-1001": ("Payments Support", "payments-support@example.com"),
+    "APP-1002": ("Portal Support", "portal-support@example.com"),
+    "APP-1003": ("Data Platform Support", "data-support@example.com"),
+}
 # account id, name, provider, environment, App ID on tagged alerts, share of alerts tagged, assign to
 ACCOUNTS = [
     ("012345678901", "payments-prod", "AWS", "Production", "APP-1001", .75, "APP-1001"),
@@ -151,7 +156,8 @@ class Command(BaseCommand):
             raise CommandError("Create a superadmin first (manage.py bootstrap).")
         for app_id, (name, owner, email, service, department) in APPLICATIONS.items():
             Application.objects.create(
-                app_id=app_id, name=name, owner_name=owner, owner_email=email,
+                app_id=app_id, name=name, support_team=SUPPORT[app_id][0], support_emails=SUPPORT[app_id][1],
+                owner_name=owner, owner_email=email,
                 business_service=service, department=department, notes="Sample data",
             )
         for path in paths:

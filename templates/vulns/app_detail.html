@@ -9,9 +9,9 @@
   {% if user.is_admin %}
   <div class="d-flex gap-2">
     {% if app %}
-      <form method="post" action="{% url 'app_notify' app_id %}">{% csrf_token %}
-        <button class="btn btn-primary btn-sm" {% if not app.has_email %}disabled title="No email registered"{% endif %} onclick="return confirm('Email {{ summary.open }} open vulnerabilities to {{ app.recipients|join:', ' }}?')"><i class="bi bi-envelope"></i> Send notification</button>
-      </form>
+      <span {% if not app.has_email %}title="Add a support email first"{% elif not summary.open %}title="No open vulnerabilities"{% endif %}>
+        <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#send-modal" {% if not app.has_email or not summary.open %}disabled{% endif %}><i class="bi bi-envelope"></i> {% if follow_up %}Send reminder{% else %}Send to support{% endif %}</button>
+      </span>
       <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> Edit</a>
       <a class="btn btn-outline-danger btn-sm" href="{% url 'app_delete' app_id %}"><i class="bi bi-trash"></i> Delete</a>
     {% else %}
@@ -23,10 +23,12 @@
 
 <div class="row g-3 mb-3">
   <div class="col-lg-4"><div class="card h-100"><div class="card-body">
-    <h2 class="h6">Owner</h2>
+    <h2 class="h6">Contacts</h2>
     {% if app %}
     <dl class="row small mb-0">
-      <dt class="col-5">Owner</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
+      <dt class="col-5">Support team</dt><dd class="col-7">{{ app.support_team|default:"—" }}</dd>
+      <dt class="col-5">Support emails</dt><dd class="col-7">{% if app.has_email %}{{ app.support_email_list|join:", " }}{% else %}<span class="badge text-bg-warning">Not set</span>{% endif %}</dd>
+      <dt class="col-5">App owner</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
       <dt class="col-5">Owner email</dt><dd class="col-7">{{ app.owner_email|default:"—" }}</dd>
       <dt class="col-5">Extra emails</dt><dd class="col-7">{{ app.extra_email_list|join:", "|default:"—" }}</dd>
       <dt class="col-5">Business service</dt><dd class="col-7">{{ app.business_service|default:"—" }}</dd>
@@ -54,9 +56,10 @@
       {% for n in notifications %}
       <div class="timeline-item {% if n.status == 'failed' %}failed{% endif %}">
         <div class="small fw-semibold">{{ n.sent_at|date:"Y-m-d H:i" }} UTC
+          <span class="badge text-bg-light border">{{ n.get_kind_display }}</span>
           {% if n.status == 'failed' %}<span class="badge text-bg-danger">failed</span>{% endif %}</div>
         <div class="small">by {{ n.sent_by.email|default:"(deleted user)" }} · {{ n.vuln_count }} vulnerabilit{{ n.vuln_count|pluralize:"y,ies" }}{% if n.past_slo_count %} ({{ n.past_slo_count }} past SLO){% endif %}</div>
-        <div class="small text-muted text-truncate" title="{{ n.recipients }}">to {{ n.recipients }}</div>
+        <div class="small text-muted text-truncate" title="{{ n.recipients }}{% if n.cc %} / cc {{ n.cc }}{% endif %}">to {{ n.recipients }}{% if n.cc %} · cc {{ n.cc }}{% endif %}</div>
         {% if n.error %}<div class="small text-danger">{{ n.error|truncatechars:120 }}</div>{% endif %}
       </div>
       {% endfor %}
@@ -64,6 +67,8 @@
     {% else %}<p class="small text-muted mb-0">Never notified.</p>{% endif %}
   </div></div></div>
 </div>
+
+{% if app %}{% include "vulns/_follow_up.html" %}{% endif %}
 
 <div class="card mb-3"><div class="card-body">
   <h2 class="h6">Cloud accounts <span class="text-muted fw-normal small">({{ cloud_accounts|length }})</span></h2>
@@ -93,4 +98,5 @@
   {% url 'app_detail' app_id as reset_url %}
   {% include "vulns/_vuln_table.html" %}
 </div></div>
+{% if app %}{% include "vulns/_follow_up_modals.html" %}{% endif %}
 {% endblock %}

@@ -47,13 +47,15 @@ def vulns_csv(vulns, columns=CSV_COLUMNS):
     return buffer.getvalue()
 
 
-def send_app_notification(app, user):
-    """Emails the owner + extra emails about open vulnerabilities and logs the attempt."""
+SUBJECT_PREFIX = {Notification.REMINDER: "Reminder: ", Notification.ESCALATION: "ESCALATION: "}
+
+
+def send_app_notification(app, user, kind, to, cc=(), follow_up=None, remark="", escalation=None):
+    """Emails the open vulnerabilities and logs the attempt, whether it worked or not."""
     if app is None:
         raise NotificationNotAllowed("This App ID is not registered.")
-    recipients = app.recipients()
-    if not recipients:
-        raise NotificationNotAllowed(f"{app.app_id} has no owner or notification email.")
+    if not to:
+        raise NotificationNotAllowed(f"{app.app_id} has no email for this notification.")
 
     now = timezone.now()
     open_vulns = list(
@@ -63,12 +65,23 @@ def send_app_notification(app, user):
         .annotate(sev_rank=severity_rank())
         .order_by("sev_rank", "slo_date", "alert_id")
     )
+    if not open_vulns:
+        raise NotificationNotAllowed(f"{app.app_id} has no open vulnerabilities.")
     counts = vulns_for_app(app.app_id).filter(status=Vulnerability.OPEN).aggregate(
         **{s.lower(): Count("id", filter=Q(severity=s)) for s in SEVERITY_ORDER},
         past_slo=Count("id", filter=Q(slo_date__lt=now)),
     )
+    to_owner = kind == Notification.ESCALATION or (follow_up is not None and follow_up.status == follow_up.ESCALATED)
     context = {
         "app": app,
+        "kind": kind,
+        "is_escalation": kind == Notification.ESCALATION,
+        "is_reminder": kind == Notification.REMINDER,
+        "greeting": (app.owner_name if to_owner else app.support_team) or ("application owner" if to_owner else "support team"),
+        "remark": remark,
+        "escalation": escalation,
+        "to": to,
+        "cc": cc,
         "total": len(open_vulns),
         "severity_counts": [(s, counts[s.lower()]) for s in SEVERITY_ORDER],
         "past_slo": counts["past_slo"],
@@ -79,11 +92,15 @@ def send_app_notification(app, user):
         "site_url": settings.SITE_URL,
         "sent_at": now,
     }
-    subject = f"[Herald] {app.app_id}: {len(open_vulns)} open container vulnerabilities ({counts['past_slo']} past SLO)"
+    subject = (
+        f"[Herald] {SUBJECT_PREFIX.get(kind, '')}{app.app_id}: {len(open_vulns)} open container vulnerabilities "
+        f"({counts['past_slo']} past SLO)"
+    )
     message = EmailMultiAlternatives(
         subject=subject,
         body=render_to_string("emails/notification.txt", context),
-        to=recipients,
+        to=list(to),
+        cc=list(cc),
     )
     message.attach_alternative(render_to_string("emails/notification.html", context), "text/html")
     message.attach(f"{app.app_id}_open_vulnerabilities_{now:%Y%m%d}.csv", vulns_csv(open_vulns), "text/csv")
@@ -91,8 +108,11 @@ def send_app_notification(app, user):
     log = Notification(
         app_id=app.app_id,
         application=app,
+        follow_up=follow_up,
+        kind=kind,
         sent_by=user,
-        recipients=", ".join(recipients),
+        recipients=", ".join(to),
+        cc=", ".join(cc),
         subject=subject[:255],
         vuln_count=len(open_vulns),
         past_slo_count=counts["past_slo"],

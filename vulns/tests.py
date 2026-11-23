@@ -1,20 +1,22 @@
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.core import mail
+from django.core.mail.backends.base import BaseEmailBackend
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.utils import timezone
 from openpyxl import Workbook
 
 from accounts.models import Role, User
 from core.models import AppSettings
 
-from . import assignment, lifecycle
+from . import assignment, followups, lifecycle
 from .columns import COLUMNS, REQUIRED
-from .models import AccountAssignment, Application, CloudAccount, Vulnerability
-from .notify import send_app_notification
+from .models import AccountAssignment, Application, CloudAccount, FollowUp, FollowUpEvent, Notification, Vulnerability
+from .notify import NotificationNotAllowed
 from .parsing import FileFormatError, normalize_account_id, normalize_provider, parse_file, to_datetime
-from .queries import vulns_for_app
+from .queries import followup_cutoff, vulns_for_app
 
 HEADERS = ["Alert ID", "Account ID", "Account Name", "App ID", "Asset ID", "Severity", "CVE ID", "Last Scan"]
 AWS_A, AWS_B = "111111111111", "222222222222"
@@ -29,6 +31,11 @@ def csv_file(rows, headers=HEADERS, name="scan.csv", preamble=""):
     lines.append(",".join(headers))
     lines += [",".join(str(v) for v in r) for r in rows]
     return SimpleUploadedFile(name, ("\n".join(lines) + "\n").encode())
+
+
+class BrokenBackend(BaseEmailBackend):
+    def send_messages(self, email_messages):
+        raise OSError("SMTP down")
 
 
 class ParsingTests(TestCase):
@@ -81,7 +88,7 @@ class ParsingTests(TestCase):
             normalize_account_id("1.23457E+11", "AWS")
 
     def test_dates_real_values_text_and_serials(self):
-        expected = datetime(2026, 10, 28, tzinfo=timezone.utc)
+        expected = datetime(2026, 10, 28, tzinfo=dt_timezone.utc)
         self.assertEqual(to_datetime(datetime(2026, 10, 28), "d"), expected)
         self.assertEqual(to_datetime("28/10/2026", "d"), expected)
         self.assertEqual(to_datetime("2026-10-28", "d"), expected)
@@ -127,7 +134,7 @@ class LifecycleTests(TestCase):
         self.assertEqual([v.alert_id for v, _ in plan.remediated], ["A2"])
         self.assertEqual(self.status("A2"), "remediated")
         self.assertEqual(self.status("B1"), "open")  # same Asset ID, different account
-        self.assertEqual(Vulnerability.objects.get(alert_id="A2").remediated_at, datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.assertEqual(Vulnerability.objects.get(alert_id="A2").remediated_at, datetime(2026, 10, 1, tzinfo=dt_timezone.utc))
 
     def test_older_file_changes_nothing(self):
         self.run_import(csv_file([row("A1", scan="2026-10-01")]))
@@ -269,8 +276,10 @@ class AssignmentTests(TestCase):
 
     def test_notification_covers_inherited_alerts(self):
         assignment.assign([self.account.pk], self.app, self.admin)
+        self.app.support_emails = "support@example.com"
+        self.app.save()
         with self.settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
-            log = send_app_notification(self.app, self.admin)
+            log = followups.notify_support(self.app, self.admin)
         self.assertEqual((log.status, log.vuln_count), ("sent", 1))
         self.assertIn("U1", mail.outbox[0].attachments[0][1])
 
@@ -305,4 +314,154 @@ class AccessTests(TestCase):
 
     def test_recipients_are_deduplicated(self):
         app = Application(owner_email="a@example.com", extra_emails="A@example.com; b@example.com\nb@example.com")
-        self.assertEqual(app.recipients(), ["a@example.com", "b@example.com"])
+        self.assertEqual(app.contact_emails(), ["a@example.com", "b@example.com"])
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class FollowUpTests(TestCase):
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+        self.operation = User.objects.create_user(
+            "op@example.com", "pw-Example-123", role=Role.objects.get(key=Role.OPERATION)
+        )
+        self.app = Application.objects.create(
+            app_id="APP-1", support_team="Payments Support", support_emails="support@example.com",
+            owner_name="Owner", owner_email="owner@example.com", extra_emails="extra@example.com",
+        )
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", app="APP-1"), row("A2", app="APP-1")]), self.admin)
+        lifecycle.finalize(run, self.admin)
+
+    def case(self):
+        return FollowUp.objects.get(application=self.app)
+
+    def test_first_send_goes_to_support_and_copies_extra_only(self):
+        log = followups.notify_support(self.app, self.admin, "note")
+        self.assertEqual(mail.outbox[0].to, ["support@example.com"])
+        self.assertEqual(mail.outbox[0].cc, ["extra@example.com"])
+        self.assertNotIn("owner@example.com", mail.outbox[0].recipients())
+        self.assertEqual((log.kind, self.case().status, self.case().first_vuln_count), ("support", "waiting", 2))
+
+    def test_no_support_email_blocks_send(self):
+        self.app.support_emails = ""
+        self.app.save()
+        with self.assertRaises(NotificationNotAllowed):
+            followups.notify_support(self.app, self.admin)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(FollowUp.objects.exists())
+
+    def test_second_send_is_a_reminder_on_the_same_follow_up(self):
+        followups.notify_support(self.app, self.admin)
+        waiting_since = self.case().waiting_since
+        log = followups.notify_support(self.app, self.admin)
+        self.assertEqual(log.kind, Notification.REMINDER)
+        self.assertEqual(FollowUp.objects.count(), 1)
+        self.assertEqual((self.case().reminder_count, self.case().waiting_since), (1, waiting_since))
+        self.assertIn("Reminder", mail.outbox[1].subject)
+
+    def test_remark_is_internal_unless_included(self):
+        followups.notify_support(self.app, self.admin, "private note")
+        self.assertNotIn("private note", mail.outbox[0].body)
+        self.assertNotIn("private note", mail.outbox[0].alternatives[0][0])
+        followups.notify_support(self.app, self.admin, "shared note", True)
+        self.assertIn("shared note", mail.outbox[1].body)
+        self.assertIn("shared note", mail.outbox[1].alternatives[0][0])
+
+    def test_escalation_emails_owner_and_copies_support(self):
+        followups.notify_support(self.app, self.admin)
+        log = followups.escalate(self.case(), self.admin)
+        message = mail.outbox[1]
+        self.assertEqual(message.to, ["owner@example.com"])
+        self.assertEqual(message.cc, ["support@example.com", "extra@example.com"])
+        self.assertIn("ESCALATION", message.subject)
+        self.assertIn("2 at first notice, 2 now", message.body)
+        self.assertEqual((log.kind, self.case().status), ("escalation", "escalated"))
+        followups.notify_support(self.app, self.admin)
+        self.assertEqual(mail.outbox[2].to, ["owner@example.com"])
+
+    def test_escalating_after_response_requires_reason(self):
+        followups.notify_support(self.app, self.admin)
+        followups.record_response(self.case(), self.operation, "Sam", timezone.localdate(), "Looking at it")
+        self.assertEqual(self.case().status, "responded")
+        with self.assertRaises(NotificationNotAllowed):
+            followups.escalate(self.case(), self.admin)
+        followups.escalate(self.case(), self.admin, "Not resolved")
+        self.assertEqual(self.case().status, "escalated")
+
+    def test_failed_email_is_logged_and_changes_nothing(self):
+        followups.notify_support(self.app, self.admin)
+        with override_settings(EMAIL_BACKEND="vulns.tests.BrokenBackend"):
+            log = followups.escalate(self.case(), self.admin, "reason")
+        self.assertEqual(log.status, Notification.FAILED)
+        self.assertEqual(self.case().status, "waiting")
+        self.assertFalse(self.case().events.filter(kind=FollowUpEvent.ESCALATED).exists())
+
+    def test_failed_first_send_opens_no_follow_up(self):
+        with override_settings(EMAIL_BACKEND="vulns.tests.BrokenBackend"):
+            log = followups.notify_support(self.app, self.admin)
+        self.assertEqual(log.status, Notification.FAILED)
+        self.assertFalse(FollowUp.objects.exists())
+
+    def test_overdue_after_configured_days(self):
+        followups.notify_support(self.app, self.admin)
+        FollowUp.objects.update(waiting_since=timezone.now() - timedelta(days=6))
+        self.assertTrue(self.case().is_overdue(followup_cutoff()))
+        settings = AppSettings.load()
+        settings.followup_overdue_days = 10
+        settings.save()
+        self.assertFalse(self.case().is_overdue(followup_cutoff()))
+
+    def test_closed_follow_up_lets_next_send_start_a_new_one(self):
+        followups.notify_support(self.app, self.admin)
+        followups.close(self.case(), self.admin)
+        log = followups.notify_support(self.app, self.admin)
+        self.assertEqual(log.kind, Notification.SUPPORT)
+        self.assertEqual(FollowUp.objects.count(), 2)
+
+    def test_operation_records_but_cannot_send_escalate_or_close(self):
+        followups.notify_support(self.app, self.admin)
+        case = self.case()
+        self.client.force_login(self.operation)
+        response = self.client.post(f"/follow-ups/{case.pk}/respond/", {
+            "responder": "Sam", "responded_on": timezone.localdate().isoformat(), "response": "On it", "close": "on",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.case().status, "responded")  # the close tick is ignored for Operation
+        self.assertEqual(self.client.post(f"/follow-ups/{case.pk}/remark/", {"remark": "note"}).status_code, 302)
+        self.assertTrue(case.events.filter(kind=FollowUpEvent.REMARK).exists())
+        for url in (f"/follow-ups/{case.pk}/escalate/", f"/follow-ups/{case.pk}/close/", "/applications/APP-1/notify/"):
+            self.assertEqual(self.client.post(url, {"remark": "x"}).status_code, 403, url)
+
+    def test_user_role_cannot_see_internal_notes_or_record(self):
+        followups.notify_support(self.app, self.admin, "secret internal note")
+        followups.notify_support(self.app, self.admin, "visible shared note", True)
+        support = User.objects.create_user("support@example.com", "pw-Example-123", role=Role.objects.get(key=Role.USER))
+        self.client.force_login(support)
+        page = self.client.get("/applications/APP-1/")
+        self.assertContains(page, "visible shared note")
+        self.assertNotContains(page, "secret internal note")
+        self.assertEqual(
+            self.client.post(f"/follow-ups/{self.case().pk}/remark/", {"remark": "x"}).status_code, 403
+        )
+
+    def test_deleting_app_closes_follow_up_and_keeps_history(self):
+        followups.notify_support(self.app, self.admin)
+        case = self.case()
+        self.client.force_login(self.admin)
+        self.client.post("/applications/APP-1/delete/")
+        case.refresh_from_db()
+        self.assertEqual((case.status, case.application), ("closed", None))
+
+    def test_pages_render_in_every_state(self):
+        self.client.force_login(self.admin)
+        urls = ("/", "/applications/", "/applications/?followup=overdue", "/applications/APP-1/", "/notifications/",
+                "/notifications/?followup=overdue", "/settings/general/")
+        for step in (lambda: None, lambda: followups.notify_support(self.app, self.admin),
+                     lambda: followups.escalate(self.case(), self.admin),
+                     lambda: followups.record_response(self.case(), self.admin, "Sam", timezone.localdate(), "Done"),
+                     lambda: followups.close(self.case(), self.admin)):
+            step()
+            for url in urls:
+                self.assertEqual(self.client.get(url).status_code, 200, url)

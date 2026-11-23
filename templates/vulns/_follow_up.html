@@ -1,0 +1,39 @@
+{% load herald_tags %}
+<div class="card mb-3" id="follow-up"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+    <h2 class="h6 mb-0">Support follow-up
+      {% if follow_up %}<span class="badge {{ follow_up.status|followup_class }}">{{ follow_up.get_status_display }}</span>{% if follow_up.overdue %} <span class="badge text-bg-warning">Overdue</span>{% endif %}{% else %}<span class="badge text-bg-light border">None open</span>{% endif %}
+    </h2>
+    {% if follow_up %}
+    <div class="d-flex gap-2 flex-wrap">
+      {% if user.can_record_responses %}
+      <button type="button" class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#response-modal"><i class="bi bi-chat-left-text"></i> Record response</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#remark-modal"><i class="bi bi-pencil-square"></i> Add remark</button>
+      {% endif %}
+      {% if user.is_admin %}
+      {% if follow_up.status != "escalated" %}<span {% if not app.owner_email %}title="Add an application owner email first"{% endif %}><button type="button" class="btn btn-sm btn-danger" data-bs-toggle="modal" data-bs-target="#escalate-modal" {% if not app.owner_email or not summary.open %}disabled{% endif %}><i class="bi bi-arrow-up-circle"></i> Escalate to owner</button></span>{% endif %}
+      <button type="button" class="btn btn-sm btn-outline-dark" data-bs-toggle="modal" data-bs-target="#close-modal"><i class="bi bi-check2-circle"></i> Close</button>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% if follow_up %}
+  <p class="small text-muted">Opened {{ follow_up.opened_at|date:"Y-m-d H:i" }} UTC with {{ follow_up.first_vuln_count }} open vulnerabilit{{ follow_up.first_vuln_count|pluralize:"y,ies" }} ({{ summary.open }} now) · {{ follow_up.reminder_count }} reminder{{ follow_up.reminder_count|pluralize }}{% if follow_up.is_waiting %} · waiting since {{ follow_up.waiting_since|date:"Y-m-d" }}, overdue after {{ followup_days }} days{% endif %}</p>
+  {% elif not app.has_email %}
+  <p class="small text-muted">Add a support email to this application to start a follow-up.</p>
+  {% else %}
+  <p class="small text-muted">Use Send to support to notify the support team and start tracking their response.</p>
+  {% endif %}
+  {% if follow_up_events %}
+  <div class="timeline mt-3">
+    {% for e in follow_up_events %}
+    <div class="timeline-item {% if e.kind == 'escalated' %}failed{% endif %}">
+      <div class="small fw-semibold">{{ e.get_kind_display }} <span class="text-muted fw-normal">· #{{ e.follow_up_id }} · {{ e.created_at|date:"Y-m-d H:i" }} UTC · by {{ e.actor.email|default:"(deleted user)" }}</span></div>
+      {% if e.notification %}<div class="small text-muted">to {{ e.notification.recipients }}{% if e.notification.cc %} · cc {{ e.notification.cc }}{% endif %} · {{ e.notification.vuln_count }} vulnerabilit{{ e.notification.vuln_count|pluralize:"y,ies" }}</div>{% endif %}
+      {% if e.responder and e.show_note %}<div class="small">{{ e.responder }} on {{ e.responded_on|date:"Y-m-d" }}</div>{% endif %}
+      {% if e.remark and e.show_note %}<div class="small">{{ e.remark|linebreaksbr }}{% if e.notification %} <span class="badge {% if e.include_in_email %}text-bg-info{% else %}text-bg-light border{% endif %}">{% if e.include_in_email %}in email{% else %}internal{% endif %}</span>{% endif %}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div></div>

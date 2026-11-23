@@ -8,7 +8,7 @@ from accounts.permissions import visible_app_ids
 from core.models import AppSettings
 
 from .columns import SEVERITY_ORDER
-from .models import Application, Notification, Vulnerability
+from .models import Application, FollowUp, Notification, Vulnerability
 
 PAGE_SIZES = ["10", "25", "50", "100", "all"]
 OPEN = Vulnerability.OPEN
@@ -48,6 +48,20 @@ def scoped_notifications(user):
     qs = Notification.objects.select_related("sent_by")
     ids = visible_app_ids(user)
     return qs if ids is None else qs.filter(app_id__in=ids)
+
+
+def followup_cutoff():
+    return timezone.now() - timedelta(days=AppSettings.load().followup_overdue_days)
+
+
+def overdue_q(cutoff):
+    return Q(status__in=[FollowUp.WAITING, FollowUp.ESCALATED], waiting_since__lt=cutoff)
+
+
+def scoped_followups(user):
+    qs = FollowUp.objects.all()
+    ids = visible_app_ids(user)
+    return qs if ids is None else qs.filter(application__app_id__in=ids)
 
 
 def paginate(request, items, default="25"):
@@ -158,6 +172,12 @@ def application_rows(user, params):
         for r in scoped_notifications(user).filter(status=Notification.SENT).values("app_id").annotate(last=Max("sent_at"))
     }
 
+    cutoff = followup_cutoff()
+    open_followups = {
+        f.application.app_id: f
+        for f in scoped_followups(user).exclude(status=FollowUp.CLOSED).select_related("application")
+    }
+
     empty = {k: 0 for k in ["open", "past_slo", "not_seen", "remediated"] + [s.lower() for s in SEVERITY_ORDER]}
     rows = []
     for app_id in sorted(set(apps) | seen_ids):
@@ -170,6 +190,8 @@ def application_rows(user, params):
             has_email=bool(app and app.has_email),
             total_open=totals.get(app_id, 0),
             last_notified=last_notified.get(app_id),
+            followup=open_followups.get(app_id),
+            followup_overdue=bool(app_id in open_followups and open_followups[app_id].is_overdue(cutoff)),
             narrowed=narrowed,
         )
         rows.append(row)
@@ -205,6 +227,14 @@ def application_rows(user, params):
         rows = [r for r in rows if r["last_notified"]]
     elif params.get("notified") == "never":
         rows = [r for r in rows if not r["last_notified"]]
+
+    followup = params.get("followup")
+    if followup == "overdue":
+        rows = [r for r in rows if r["followup_overdue"]]
+    elif followup == "none":
+        rows = [r for r in rows if not r["followup"]]
+    elif followup in (FollowUp.WAITING, FollowUp.RESPONDED, FollowUp.ESCALATED):
+        rows = [r for r in rows if r["followup"] and r["followup"].status == followup]
 
     rows.sort(key=lambda r: (-r["open"], r["app_id"]))
     return rows

@@ -1,5 +1,12 @@
-{% autoescape off %}Hello {{ app.owner_name|default:"application owner" }},
-
+{% autoescape off %}Hello {{ greeting }},
+{% if is_escalation %}
+ESCALATION: {{ escalation.support_team }} was first notified on {{ escalation.first_notified|date:"Y-m-d" }}{% if escalation.reminders %} and received {{ escalation.reminders }} reminder{{ escalation.reminders|pluralize }}{% endif %}.{% if escalation.responded %} This is being escalated after their response.{% elif escalation.earlier_response %} No new response has been recorded since their last reply.{% else %} No response has been recorded.{% endif %}
+Open vulnerabilities: {{ escalation.first_count }} at first notice, {{ total }} now.
+{% elif is_reminder %}
+This is a reminder. Please review the vulnerabilities below and respond.
+{% endif %}{% if remark %}
+Remark: {{ remark }}
+{% endif %}
 Herald has {{ total }} open container vulnerabilit{{ total|pluralize:"y,ies" }} for {{ app.app_id }}{% if app.name %} ({{ app.name }}){% endif %}.
 
 Severity summary

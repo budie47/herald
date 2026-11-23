@@ -1,3 +1,4 @@
+from django.core.validators import MinValueValidator
 from django.db import models
 
 from .crypto import decrypt, encrypt
@@ -20,6 +21,10 @@ class SingletonModel(models.Model):
 class AppSettings(SingletonModel):
     not_seen_days = models.PositiveIntegerField(
         default=90, help_text="Open vulnerabilities whose asset has not been rescanned for this many days are flagged Not seen."
+    )
+    followup_overdue_days = models.PositiveIntegerField(
+        "Follow-up overdue after (days)", default=5, validators=[MinValueValidator(1)],
+        help_text="Calendar days without a response before a support or owner follow-up is flagged Overdue.",
     )
     slo_critical_days = models.PositiveIntegerField(default=15, verbose_name="SLO days: Critical")
     slo_high_days = models.PositiveIntegerField(default=30, verbose_name="SLO days: High")

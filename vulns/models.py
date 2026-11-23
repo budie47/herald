@@ -7,13 +7,33 @@ from django.db.models.functions import Coalesce, NullIf
 from django.utils import timezone
 
 
+def split_emails(value):
+    return [e for e in re.split(r"[,;\s]+", value or "") if e]
+
+
+def unique_emails(emails, exclude=()):
+    """Duplicates removed (case-insensitive), order kept."""
+    seen, result = {e.lower() for e in exclude}, []
+    for email in emails:
+        email = (email or "").strip()
+        if email and email.lower() not in seen:
+            seen.add(email.lower())
+            result.append(email)
+    return result
+
+
 class Application(models.Model):
     app_id = models.CharField("App ID", max_length=100, unique=True)
     name = models.CharField(max_length=200, blank=True)
-    owner_name = models.CharField(max_length=200, blank=True)
-    owner_email = models.EmailField(blank=True)
+    support_team = models.CharField("Support team name", max_length=200, blank=True)
+    support_emails = models.TextField(
+        blank=True, help_text="First contact for notifications. Separate with commas, semicolons or new lines."
+    )
+    owner_name = models.CharField("Application owner name", max_length=200, blank=True)
+    owner_email = models.EmailField("Application owner email", blank=True, help_text="Receives escalations.")
     extra_emails = models.TextField(
-        "Extra notification emails", blank=True, help_text="Separate with commas, semicolons or new lines."
+        "Extra notification emails", blank=True,
+        help_text="Copied on every email. Separate with commas, semicolons or new lines.",
     )
     business_service = models.CharField(max_length=200, blank=True)
     department = models.CharField(max_length=200, blank=True)
@@ -28,21 +48,19 @@ class Application(models.Model):
         return self.app_id
 
     def extra_email_list(self):
-        return [e for e in re.split(r"[,;\s]+", self.extra_emails or "") if e]
+        return split_emails(self.extra_emails)
 
-    def recipients(self):
-        """Owner plus extra emails, duplicates removed (case-insensitive), order kept."""
-        seen, result = set(), []
-        for email in [self.owner_email, *self.extra_email_list()]:
-            email = (email or "").strip()
-            if email and email.lower() not in seen:
-                seen.add(email.lower())
-                result.append(email)
-        return result
+    def support_email_list(self):
+        return unique_emails(split_emails(self.support_emails))
+
+    def contact_emails(self):
+        """Everyone tied to this application: support, owner and extra emails."""
+        return unique_emails([*self.support_email_list(), self.owner_email, *self.extra_email_list()])
 
     @property
     def has_email(self):
-        return bool(self.recipients())
+        """Notifications start with the support team, so a support email is required to send."""
+        return bool(self.support_email_list())
 
 
 class CloudAccount(models.Model):
@@ -254,15 +272,74 @@ class Vulnerability(models.Model):
         return "Open"
 
 
+class FollowUp(models.Model):
+    """One notification cycle for an application: support first, then escalation to the owner if needed."""
+
+    WAITING, RESPONDED, ESCALATED, CLOSED = "waiting", "responded", "escalated", "closed"
+    STATUS_CHOICES = [
+        (WAITING, "Awaiting response"), (RESPONDED, "Responded"), (ESCALATED, "Escalated"), (CLOSED, "Closed"),
+    ]
+
+    application = models.ForeignKey(
+        Application, null=True, blank=True, on_delete=models.SET_NULL, related_name="follow_ups"
+    )
+    app_id = models.CharField(max_length=100, db_index=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=WAITING, db_index=True)
+    opened_at = models.DateTimeField(default=timezone.now)
+    opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    waiting_since = models.DateTimeField(default=timezone.now, help_text="Reminders do not reset this.")
+    first_vuln_count = models.PositiveIntegerField(default=0)
+    reminder_count = models.PositiveIntegerField(default=0)
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    escalated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-opened_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["application"], condition=~Q(status="closed"), name="one_open_follow_up_per_application"
+            ),
+        ]
+
+    def __str__(self):
+        return f"Follow-up #{self.pk} ({self.app_id})"
+
+    @property
+    def is_open(self):
+        return self.status != self.CLOSED
+
+    @property
+    def is_waiting(self):
+        return self.status in (self.WAITING, self.ESCALATED)
+
+    def is_overdue(self, cutoff):
+        return self.is_waiting and self.waiting_since < cutoff
+
+
 class Notification(models.Model):
     SENT, FAILED = "sent", "failed"
     STATUS_CHOICES = [(SENT, "Sent"), (FAILED, "Failed")]
+    DIRECT, SUPPORT, REMINDER, ESCALATION = "direct", "support", "reminder", "escalation"
+    KIND_CHOICES = [
+        (DIRECT, "Direct"), (SUPPORT, "To support"), (REMINDER, "Reminder"), (ESCALATION, "Escalation"),
+    ]
 
     app_id = models.CharField(max_length=100, db_index=True)
     application = models.ForeignKey(Application, null=True, blank=True, on_delete=models.SET_NULL)
     sent_at = models.DateTimeField(auto_now_add=True)
     sent_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    follow_up = models.ForeignKey(
+        FollowUp, null=True, blank=True, on_delete=models.SET_NULL, related_name="notifications"
+    )
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=DIRECT)
     recipients = models.TextField(blank=True)
+    cc = models.TextField(blank=True)
     subject = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES)
     error = models.TextField(blank=True)
@@ -271,6 +348,27 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ["-sent_at"]
+
+
+class FollowUpEvent(models.Model):
+    SENT, REMINDER, ESCALATED, RESPONSE, REMARK, CLOSED = "sent", "reminder", "escalated", "response", "remark", "closed"
+    KIND_CHOICES = [
+        (SENT, "Sent to support"), (REMINDER, "Reminder sent"), (ESCALATED, "Escalated to owner"),
+        (RESPONSE, "Response recorded"), (REMARK, "Remark"), (CLOSED, "Closed"),
+    ]
+
+    follow_up = models.ForeignKey(FollowUp, on_delete=models.CASCADE, related_name="events")
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    remark = models.TextField(blank=True)
+    include_in_email = models.BooleanField(default=False)
+    notification = models.ForeignKey(Notification, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    responder = models.CharField(max_length=200, blank=True)
+    responded_on = models.DateField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
 
 
 class LegacyUpload(models.Model):

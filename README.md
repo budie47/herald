@@ -27,9 +27,9 @@ server in **Settings > Email Setting** and use **Send test email**.
 | Role | Can do |
 |---|---|
 | Superadmin | Everything, plus add users (email + temporary password), assign roles, reset passwords |
-| Administrator | Manage settings, register/edit applications, assign cloud accounts, upload data, send notifications |
-| Operation | View the dashboard, applications and all vulnerabilities, and assign cloud accounts to App IDs |
-| User | View only App IDs where their email is the owner or an extra notification email |
+| Administrator | Manage settings, register/edit applications, assign cloud accounts, upload data, send, escalate and close notification follow-ups |
+| Operation | View the dashboard, applications and all vulnerabilities, assign cloud accounts to App IDs, and record support responses and remarks |
+| User | View only App IDs where their email is a support, owner or extra notification email |
 
 Users created with a temporary password must change it at first sign-in. "Forgot password?" on the sign-in
 page emails a reset link to existing accounts only, and the page never reveals whether an account exists.
@@ -69,6 +69,18 @@ Every alert belongs to one AWS account or Azure subscription. Its application is
 
 Several accounts can belong to one App ID. Superadmin, Administrator and Operation assign accounts on the
 **Cloud Accounts** page, and every change is recorded. Unassigned alerts are not emailed until they have an owner.
+
+## Notification follow-ups
+
+1. **Send to support** emails the application's support team, copies the extra emails, and opens a follow-up.
+2. Sending again while it is open adds a **reminder** to the same timeline.
+3. **Record response** stores who answered, when, and what they said. Herald does not read email replies.
+4. A follow-up with no response for 5 days (Settings > General) is flagged **Overdue**.
+5. **Escalate** is always manual. It emails the application owner and copies support and the extra emails.
+   Escalating after support has responded requires a reason.
+6. An Administrator **closes** the follow-up.
+
+Remarks are internal unless **Include in email** is ticked. A failed email is logged and never changes the status.
 
 ## Development
 

@@ -29,6 +29,19 @@ def account_assigner_required(view):
     return wrapper
 
 
+def response_recorder_required(view):
+    """Superadmin, Administrator and Operation."""
+
+    @wraps(view)
+    @login_required
+    def wrapper(request, *args, **kwargs):
+        if not request.user.can_record_responses:
+            raise PermissionDenied
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
 def superadmin_required(view):
     @wraps(view)
     @login_required
@@ -41,14 +54,16 @@ def superadmin_required(view):
 
 
 def visible_app_ids(user):
-    """None means every App ID; otherwise the set of App IDs whose owner or extra emails include the user."""
+    """None means every App ID; otherwise the App IDs whose owner, support or extra emails include the user."""
     if user.can_view_all:
         return None
     from vulns.models import Application
 
     email = user.email.lower()
-    candidates = Application.objects.filter(Q(owner_email__iexact=email) | Q(extra_emails__icontains=email))
-    return {app.app_id for app in candidates if email in {e.lower() for e in app.recipients()}}
+    candidates = Application.objects.filter(
+        Q(owner_email__iexact=email) | Q(extra_emails__icontains=email) | Q(support_emails__icontains=email)
+    )
+    return {app.app_id for app in candidates if email in {e.lower() for e in app.contact_emails()}}
 
 
 def can_view_app(user, app_id):

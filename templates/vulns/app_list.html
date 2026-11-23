@@ -26,6 +26,8 @@
       <select name="slo" class="form-select form-select-sm"><option value="">Any</option><option value="past" {% if params.slo == "past" %}selected{% endif %}>Past SLO</option><option value="none" {% if params.slo == "none" %}selected{% endif %}>None past SLO</option></select></div>
     <div class="col-6 col-md-1"><label class="form-label small mb-0">Notified</label>
       <select name="notified" class="form-select form-select-sm"><option value="">Any</option><option value="yes" {% if params.notified == "yes" %}selected{% endif %}>Notified</option><option value="never" {% if params.notified == "never" %}selected{% endif %}>Never</option></select></div>
+    <div class="col-6 col-md-2"><label class="form-label small mb-0">Follow-up</label>
+      <select name="followup" class="form-select form-select-sm">{% for v, l in followup_filters %}<option value="{{ v }}" {% if params.followup == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-1"><label class="form-label small mb-0">Environment</label>
       <select name="env" class="form-select form-select-sm"><option value="">All</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-1"><label class="form-label small mb-0">Exception</label>
@@ -41,8 +43,10 @@
 <div class="card"><div class="card-body">
   {% if user.is_admin %}
   <div class="d-flex align-items-center gap-2 mb-2">
-    <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send notifications to the owners of the selected applications?')"><i class="bi bi-envelope"></i> Notify selected (<span id="bulk-count">0</span>)</button>
-    <span class="small text-muted">Only registered apps with an email can be selected.</span>
+    <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send to the support teams of the selected applications? Apps with an open follow-up get a reminder.')"><i class="bi bi-envelope"></i> Send to support (<span id="bulk-count">0</span>)</button>
+    <input type="text" name="remark" class="form-control form-control-sm w-auto flex-grow-1" style="max-width: 340px" placeholder="Optional remark" aria-label="Optional remark">
+    <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="include_in_email" id="bulk-include"><label class="form-check-label" for="bulk-include">Include in email</label></div>
+    <span class="small text-muted">Only registered apps with a support email can be selected.</span>
   </div>
   {% endif %}
   <div class="table-responsive">
@@ -50,7 +54,7 @@
     <thead><tr>
       {% if user.is_admin %}<th><input type="checkbox" class="form-check-input" id="check-all"></th>{% endif %}
       <th>App ID</th><th>Name</th><th>Owner</th><th>Service / Department</th>
-      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th>Last notified</th><th></th>
+      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th>Follow-up</th><th>Last notified</th><th></th>
     </tr></thead>
     <tbody>
     {% for row in page %}
@@ -59,7 +63,7 @@
         <td class="nowrap"><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
         {% if row.registered %}
           <td>{{ row.app.name|default:"—" }}</td>
-          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no email</span>{% endif %}</div></td>
+          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no support email</span>{% endif %}</div></td>
           <td class="small">{{ row.app.business_service|default:"" }}{% if row.app.department %}<div class="text-muted">{{ row.app.department }}</div>{% endif %}</td>
         {% else %}
           <td colspan="3"><span class="badge text-bg-warning">unregistered</span>
@@ -70,15 +74,16 @@
         <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
         <td class="text-end {% if row.not_seen %}text-warning fw-semibold{% endif %}">{{ row.not_seen }}</td>
         <td class="text-end text-success">{{ row.remediated }}</td>
+        <td class="nowrap">{% if row.followup %}<span class="badge {{ row.followup.status|followup_class }}">{{ row.followup.get_status_display }}</span>{% if row.followup_overdue %} <span class="badge text-bg-warning">Overdue</span>{% endif %}{% else %}<span class="text-muted small">—</span>{% endif %}</td>
         <td class="small nowrap">{{ row.last_notified|date:"Y-m-d H:i"|default:"never" }}</td>
         <td class="text-end nowrap">
           {% if user.is_admin and row.registered %}
-            <button class="btn btn-sm btn-outline-secondary py-0" formaction="{% url 'app_notify' row.app_id %}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No email registered{% elif not row.open %}No open vulnerabilities{% else %}Send notification{% endif %}" onclick="return confirm('Send notification for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
+            <button class="btn btn-sm btn-outline-secondary py-0" formaction="{% url 'app_notify' row.app_id %}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No support email{% elif not row.open %}No open vulnerabilities{% elif row.followup %}Send reminder{% else %}Send to support{% endif %}" onclick="return confirm('{% if row.followup %}Send a reminder{% else %}Send to support{% endif %} for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
           {% endif %}
         </td>
       </tr>
     {% empty %}
-      <tr><td colspan="12" class="text-muted">No applications match these filters.</td></tr>
+      <tr><td colspan="13" class="text-muted">No applications match these filters.</td></tr>
     {% endfor %}
     </tbody>
   </table>

@@ -37,6 +37,14 @@ def status_class(status):
 
 
 @register.filter
+def followup_class(status):
+    return {
+        "waiting": "text-bg-primary", "responded": "text-bg-success", "escalated": "text-bg-danger",
+        "closed": "text-bg-secondary",
+    }.get(status, "text-bg-secondary")
+
+
+@register.filter
 def pct(value, total):
     return round(100 * value / total) if total else 0
 
