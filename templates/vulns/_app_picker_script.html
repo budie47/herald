@@ -1,0 +1,82 @@
+<script>
+document.querySelectorAll('.app-picker').forEach(picker => {
+  const input = picker.querySelector('.picker-input'), value = picker.querySelector('.picker-value');
+  const list = picker.querySelector('.picker-list'), clear = picker.querySelector('.picker-clear');
+  let timer, active = -1, options = [], request = 0;
+
+  const accounts = () => picker.dataset.accounts ||
+    [...document.querySelectorAll('.row-check:checked')].map(c => c.value).slice(0, 200).join(',');
+  const notify = () => picker.dispatchEvent(new CustomEvent('picker:change', {bubbles: true}));
+  const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+  const mark = () => options.forEach((o, i) => {
+    o.el.classList.toggle('active', i === active);
+    o.el.setAttribute('aria-selected', i === active ? 'true' : 'false');
+    if (i === active) o.el.scrollIntoView({block: 'nearest'});
+  });
+  const choose = option => {
+    value.value = option.id; input.value = option.label; input.readOnly = true; clear.hidden = false; close(); notify();
+  };
+  const reset = () => { value.value = ''; input.value = ''; input.readOnly = false; clear.hidden = true; notify(); input.focus(); };
+
+  function heading(text) {
+    const h = document.createElement('div'); h.className = 'picker-heading'; h.textContent = text; list.append(h);
+  }
+  function option(item) {
+    const el = document.createElement('div'); el.className = 'picker-option'; el.setAttribute('role', 'option');
+    const title = document.createElement('div'); title.className = 'd-flex justify-content-between gap-2';
+    const name = document.createElement('span');
+    const id = document.createElement('strong'); id.textContent = item.app_id; name.append(id);
+    if (item.name) name.append(' · ' + item.name);
+    const state = document.createElement('span');
+    state.className = 'small nowrap ' + (item.has_support ? 'text-success' : 'text-warning-emphasis');
+    state.textContent = item.has_support ? '✓ Contacts set' : '⚠ No support email';
+    title.append(name, state); el.append(title);
+    const detail = item.note || (item.conflict ? 'Scan data has more than one name for this App ID' : '');
+    if (detail) { const n = document.createElement('div'); n.className = 'small text-muted'; n.textContent = detail; el.append(n); }
+    const entry = {el, id: item.id, label: item.app_id + (item.name ? ' · ' + item.name : '')};
+    el.addEventListener('mousedown', e => { e.preventDefault(); choose(entry); });
+    options.push(entry); list.append(el);
+  }
+  function render(data, q) {
+    list.replaceChildren(); options = []; active = -1;
+    if (data.suggested.length) { heading('Suggested'); data.suggested.forEach(option); }
+    if (data.recent.length) { heading('Recently used'); data.recent.forEach(option); }
+    const shown = new Set(options.map(o => o.id));
+    const matches = data.matches.filter(m => !shown.has(m.id));
+    if (matches.length) { heading(q ? 'Matches' : 'All App IDs'); matches.forEach(option); }
+    if (!options.length) { const none = document.createElement('div'); none.className = 'picker-heading'; none.textContent = 'No App ID matches this search.'; list.append(none); }
+    if (data.more) { const more = document.createElement('div'); more.className = 'picker-heading'; more.textContent = 'Showing top 20. Keep typing to narrow down.'; list.append(more); }
+    if (picker.dataset.allowClear) {
+      const entry = {el: document.createElement('div'), id: 'none', label: 'Remove assignment'};
+      entry.el.className = 'picker-option text-danger'; entry.el.setAttribute('role', 'option'); entry.el.textContent = entry.label;
+      entry.el.addEventListener('mousedown', e => { e.preventDefault(); choose(entry); });
+      options.push(entry); list.append(entry.el);
+    }
+    list.hidden = false; input.setAttribute('aria-expanded', 'true');
+  }
+  async function search() {
+    const id = ++request, q = input.value.trim();
+    try {
+      const url = picker.dataset.searchUrl + '?' + new URLSearchParams({q, accounts: accounts()});
+      const response = await fetch(url, {headers: {'X-Requested-With': 'fetch'}});
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      if (id === request && document.activeElement === input) render(data, q);
+    } catch (error) {
+      if (id === request) { list.replaceChildren(); options = []; heading('Search is unavailable. Try again.'); list.hidden = false; }
+    }
+  }
+  input.addEventListener('focus', () => { if (!input.readOnly) search(); });
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 180); });
+  input.addEventListener('blur', () => setTimeout(close, 120));
+  clear.addEventListener('click', reset);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); if (!list.hidden && active >= 0) choose(options[active]); return; }
+    if (e.key === 'Escape') { close(); return; }
+    if (input.readOnly && (e.key === 'Backspace' || e.key === 'Delete')) { e.preventDefault(); reset(); return; }
+    if (list.hidden || !options.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % options.length; mark(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + options.length) % options.length; mark(); }
+  });
+});
+</script>

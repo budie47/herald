@@ -16,7 +16,7 @@ Severity summary
 Cloud accounts
 {% for account, n in account_counts %}  {{ account }}: {{ n }}
 {% endfor %}
-{% if truncated %}The first {{ limit }} are listed below; {% endif %}All open vulnerabilities are in the attached CSV.
+The {{ vulns|length }} highest priority vulnerabilit{{ vulns|length|pluralize:"y is,ies are" }} listed below. {% if attached %}All {{ total }} open vulnerabilities are in the attached file.{% else %}The full list is too large to attach. Sign in to download it: {{ download_url }}{% endif %}
 
 {% for v in vulns %}- [{{ v.severity }}] {{ v.cve|default:"(no CVE)" }} in {{ v.package }} {{ v.current_version }} -> {{ v.recommended_version|default:"no fix" }} | {{ v.account_name }} ({{ v.account_number }}) | {{ v.image|default:v.asset_id }} | {{ v.environment }} | SLO {{ v.slo_date|date:"Y-m-d"|default:"-" }}{% if v.slo_overdue %} (PAST SLO){% endif %}
 {% endfor %}

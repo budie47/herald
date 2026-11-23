@@ -1,9 +1,11 @@
 """Reads scanner exports (CSV / Excel) into normalized rows plus a list of rejected rows."""
+import codecs
 import csv
 import io
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import chain, islice
 
 from dateutil import parser as dateparser
 from openpyxl import load_workbook
@@ -13,6 +15,10 @@ from .columns import (
 )
 
 HEADER_SCAN_ROWS = 50
+FIELD_LIMITS = {
+    "alert_id": 200, "csb_id": 100, "account_id": 100, "account_name": 255, "provider": 30, "asset_id": 500,
+    "app_id": 100, "environment": 100, "severity": 30, "ritm": 100, "cve": 100, "cve_link": 500,
+}
 BLANKS = {"", "-", "n/a", "na", "none", "null", "nan", "unknown"}
 GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 FALSE_WORDS = BLANKS | {"no", "n", "false", "0", "f"}
@@ -127,7 +133,7 @@ def to_text(raw):
         return str(int(raw))
     if isinstance(raw, (datetime, date)):
         return raw.isoformat()
-    return str(raw).strip()
+    return str(raw).replace("\x00", "").strip()
 
 
 def normalize_severity(text):
@@ -178,46 +184,56 @@ def convert(key, raw):
 # --- reading files ----------------------------------------------------------------------
 
 
-def _read_excel(fileobj):
+def _excel_rows(fileobj):
     try:
         workbook = load_workbook(fileobj, read_only=True, data_only=True)
     except Exception as exc:
         raise FileFormatError(f"Could not open the Excel file: {exc}") from None
-    try:
-        sheet = workbook.worksheets[0]
-        return [(i, list(row)) for i, row in enumerate(sheet.iter_rows(values_only=True), start=1)]
-    finally:
-        workbook.close()
+    sheet = workbook.worksheets[0]
+    sheet.reset_dimensions()  # some exporters write a wrong sheet size
 
-
-def _decode(raw):
-    for encoding in ("utf-8-sig", "cp1252"):
+    def rows():
         try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("latin-1")
+            for number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                yield number, list(row)
+        finally:
+            workbook.close()
+
+    return rows()
 
 
-def _read_csv(fileobj):
-    text = _decode(fileobj.read())
-    # Try the common delimiters and keep the first one that yields a recognizable header row.
-    first_rows = None
-    for delimiter in (",", ";", "\t", "|"):
-        rows = [(i, row) for i, row in enumerate(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter), start=1)]
-        if first_rows is None:
-            first_rows = rows
-        if find_header(rows)[0] is not None:
-            return rows
-    return first_rows or []
+def _detect_encoding(sample):
+    try:
+        codecs.getincrementaldecoder("utf-8-sig")().decode(sample, final=False)
+        return "utf-8-sig"
+    except UnicodeDecodeError:
+        return "cp1252"
+
+
+def _csv_rows(fileobj):
+    csv.field_size_limit(16 * 1024 * 1024)
+    sample = fileobj.read(1024 * 1024)
+    fileobj.seek(0)
+    encoding = _detect_encoding(sample)
+    text = sample.decode(encoding, errors="ignore")
+    delimiter = ","
+    for candidate in (",", ";", "\t", "|"):  # keep the first delimiter that yields a recognizable header row
+        head = list(islice(csv.reader(io.StringIO(text, newline=""), delimiter=candidate), HEADER_SCAN_ROWS))
+        if find_header(list(enumerate(head, start=1)))[0] is not None:
+            delimiter = candidate
+            break
+    stream = io.TextIOWrapper(fileobj, encoding=encoding, errors="replace", newline="")
+    return enumerate(csv.reader(stream, delimiter=delimiter), start=1)
 
 
 def read_rows(fileobj, filename):
+    """Yields (row number, values) without loading the file into memory."""
+    fileobj = getattr(fileobj, "file", fileobj)
     name = filename.lower()
     if name.endswith((".xlsx", ".xlsm")):
-        return _read_excel(fileobj)
+        return _excel_rows(fileobj)
     if name.endswith(".csv"):
-        return _read_csv(fileobj)
+        return _csv_rows(fileobj)
     raise FileFormatError("Unsupported file type. Upload a .csv, .xlsx or .xlsm file.")
 
 
@@ -230,40 +246,45 @@ def find_header(rows):
     return None, None
 
 
-def parse_file(fileobj, filename):
-    rows = read_rows(fileobj, filename)
-    position, header = find_header(rows)
-    if position is None:
-        raise FileFormatError(
-            f"No header row with 'Alert ID', 'Account ID' and 'Account Name' was found in the first {HEADER_SCAN_ROWS} rows."
-        )
+class StreamParser:
+    """Parses a file in batches. Each batch is (accepted records, rejected rows)."""
 
-    result = ParseResult(header_row=rows[position][0])
-    mapping = []
-    seen_keys = set()
-    for index, title in enumerate(header):
-        if title is None or str(title).strip() == "":
-            continue
-        key = HEADER_MAP.get(normalize_header(title))
-        if key and key not in seen_keys:
-            seen_keys.add(key)
-            mapping.append((index, key))
-        else:
-            result.unknown_columns.append(str(title).strip())
-    result.missing_columns = [LABELS[key] for key in LABELS if key not in seen_keys]
+    def __init__(self, fileobj, filename):
+        self.rows_read = 0
+        self.unknown_columns = []
+        rows = read_rows(fileobj, filename)
+        head = list(islice(rows, HEADER_SCAN_ROWS))
+        position, header = find_header(head)
+        if position is None:
+            raise FileFormatError(
+                f"No header row with 'Alert ID', 'Account ID' and 'Account Name' was found in the first "
+                f"{HEADER_SCAN_ROWS} rows."
+            )
+        self.header_row = head[position][0]
+        self._rows = chain(head[position + 1:], rows)
+        self._mapping = []
+        seen_keys = set()
+        for index, title in enumerate(header):
+            if title is None or str(title).strip() == "":
+                continue
+            key = HEADER_MAP.get(normalize_header(title))
+            if key and key not in seen_keys:
+                seen_keys.add(key)
+                self._mapping.append((index, key))
+            else:
+                self.unknown_columns.append(str(title).strip())
+        self.missing_columns = [LABELS[key] for key in LABELS if key not in seen_keys]
 
-    for row_number, values in rows[position + 1:]:
-        if all(_is_blank(v) or (isinstance(v, str) and not v.strip()) for v in values):
-            continue
-        result.rows_read += 1
+    def _parse(self, row_number, values):
         record, problems = {}, []
-        for index, key in mapping:
+        for index, key in self._mapping:
             raw = values[index] if index < len(values) else None
             try:
                 record[key] = convert(key, raw)
             except ValueError as exc:
                 record[key] = None
                 problems.append(str(exc))
+        record["app_id"] = (record.get("app_id") or "").upper()
         record["provider"] = normalize_provider(record.get("provider"), record.get("account_id"))
         try:
             record["account_id"] = normalize_account_id(record.get("account_id"), record["provider"])
@@ -277,17 +298,46 @@ def parse_file(fileobj, filename):
             problems.insert(0, "Account Name is missing")
         if not record.get("alert_id"):
             problems.insert(0, "Alert ID is missing")
+        for key, limit in FIELD_LIMITS.items():
+            if len(record.get(key) or "") > limit:
+                problems.append(f"{LABELS[key]} is longer than {limit} characters")
         if problems:
-            result.errors.append(
-                {
-                    "row": row_number,
-                    "reason": "; ".join(problems),
-                    "alert_id": record.get("alert_id") or "",
-                    "account_id": record.get("account_id") or "",
-                    "asset_id": record.get("asset_id") or "",
-                }
-            )
-        else:
-            record["_row"] = row_number
-            result.rows.append(record)
+            return None, {
+                "row": row_number,
+                "reason": "; ".join(problems),
+                "alert_id": (record.get("alert_id") or "")[:200],
+                "account_id": (record.get("account_id") or "")[:100],
+                "asset_id": (record.get("asset_id") or "")[:500],
+            }
+        record["_row"] = row_number
+        return record, None
+
+    def batches(self, size=5000):
+        accepted, rejected = [], []
+        for row_number, values in self._rows:
+            if all(_is_blank(v) or (isinstance(v, str) and not v.strip()) for v in values):
+                continue
+            self.rows_read += 1
+            record, error = self._parse(row_number, values)
+            if error:
+                rejected.append(error)
+            else:
+                accepted.append(record)
+            if len(accepted) + len(rejected) >= size:
+                yield accepted, rejected
+                accepted, rejected = [], []
+        if accepted or rejected:
+            yield accepted, rejected
+
+
+def parse_file(fileobj, filename):
+    """Reads a whole file. Imports use StreamParser directly so they stay within memory limits."""
+    parser = StreamParser(fileobj, filename)
+    result = ParseResult(
+        header_row=parser.header_row, unknown_columns=parser.unknown_columns, missing_columns=parser.missing_columns
+    )
+    for accepted, rejected in parser.batches():
+        result.rows.extend(accepted)
+        result.errors.extend(rejected)
+    result.rows_read = parser.rows_read
     return result

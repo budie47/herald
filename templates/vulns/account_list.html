@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load herald_tags %}
+{% load herald_tags humanize %}
 {% block title %}Cloud Accounts{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
@@ -9,7 +9,7 @@
 <p class="text-muted small">AWS accounts and Azure subscriptions. Alerts with no App ID follow the App ID assigned to their account. An alert's own App ID always wins.</p>
 
 <ul class="nav nav-tabs mb-3">
-  {% for value, label in states %}<li class="nav-item"><a class="nav-link {% if state == value %}active{% endif %}" href="{% qs state=value page=None %}">{{ label }}{% if value == "needs" and unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}</a></li>{% endfor %}
+  {% for value, label in states %}<li class="nav-item"><a class="nav-link {% if state == value %}active{% endif %}" href="{% qs state=value page=None %}">{{ label }}{% if value == "needs" and unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts|intcomma }}</span>{% elif value == "suggested" and suggestion_count %} <span class="badge text-bg-primary">{{ suggestion_count|intcomma }}</span>{% endif %}</a></li>{% endfor %}
 </ul>
 
 <form method="get" class="row g-2 mb-3">
@@ -19,21 +19,22 @@
   <div class="col-6 col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'account_list' %}?state={{ state }}">Reset</a></div>
 </form>
 
-<form method="post" action="{% url 'account_assign' %}">{% csrf_token %}
+<form method="post" action="{% url 'account_assign' %}" id="assign-form">{% csrf_token %}
 <input type="hidden" name="next" value="{{ request.get_full_path }}">
+<input type="hidden" name="select_all" id="select-all" value="">
+<input type="hidden" name="state" value="{{ state }}"><input type="hidden" name="q" value="{{ params.q }}"><input type="hidden" name="provider" value="{{ params.provider }}">
 <div class="card"><div class="card-body">
-  <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-    <select name="application" class="form-select form-select-sm w-auto" aria-label="App ID to assign" required>
-      <option value="">Choose App ID…</option>
-      {% for app in applications %}<option value="{{ app.pk }}">{{ app.app_id }}{% if app.name %} · {{ app.name }}{% endif %}</option>{% endfor %}
-      <option value="none">Remove assignment</option>
-    </select>
+  <div class="d-flex align-items-start gap-2 mb-2 flex-wrap">
+    <div style="width: min(420px, 100%)">{% include "vulns/_app_picker.html" with allow_clear=True %}</div>
     <button class="btn btn-sm btn-primary" id="assign-btn" disabled><i class="bi bi-link-45deg"></i> Assign selected (<span id="assign-count">0</span>)</button>
-    {% if not applications %}<span class="small text-muted">Register an application first.</span>{% endif %}
+  </div>
+  <div class="alert alert-info py-1 px-2 small mb-2" id="select-all-bar" hidden>
+    <span id="select-all-text"></span>
+    <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="select-all-btn"></button>
   </div>
   <div class="table-responsive">
   <table class="table table-sm table-hover align-middle mb-0">
-    <thead><tr><th><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all"></th><th>Provider</th><th>Account name</th><th>Account ID</th><th>Assigned App ID</th><th>App IDs seen</th><th class="text-end">Untagged open</th><th class="text-end">Critical + High</th><th class="text-end">Past SLO</th><th class="text-end">Total open</th></tr></thead>
+    <thead><tr><th><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select this page"></th><th>Provider</th><th>Account name</th><th>Account ID</th><th>Assigned App ID</th><th>App IDs seen</th><th class="text-end">Untagged open</th><th class="text-end">Critical + High</th><th class="text-end">Past SLO</th><th class="text-end">Total open</th></tr></thead>
     <tbody>
     {% for a in page %}
       <tr>
@@ -41,12 +42,12 @@
         <td>{{ a.provider|default:"—" }}</td>
         <td><a href="{% url 'account_detail' a.account_id %}">{{ a.account_name }}</a></td>
         <td class="font-monospace small">{{ a.account_id }}</td>
-        <td>{% if a.application %}<a href="{% url 'app_detail' a.application.app_id %}">{{ a.application.app_id }}</a>{% elif a.untagged_open %}<span class="badge text-bg-warning">Unassigned</span>{% else %}<span class="text-muted">Not needed</span>{% endif %}</td>
-        <td class="small">{% for id in a.app_ids %}<span class="badge text-bg-light border">{{ id }}</span> {% empty %}<span class="text-muted">none</span>{% endfor %}</td>
-        <td class="text-end fw-semibold">{{ a.untagged_open }}</td>
-        <td class="text-end {% if a.untagged_critical_high %}text-danger fw-semibold{% endif %}">{{ a.untagged_critical_high }}</td>
-        <td class="text-end {% if a.untagged_past_slo %}text-overdue{% endif %}">{{ a.untagged_past_slo }}</td>
-        <td class="text-end">{{ a.open_count }}</td>
+        <td class="nowrap">{% if a.application %}<a href="{% url 'app_detail' a.application.app_id %}">{{ a.application.app_id }}</a>{% elif a.untagged_open %}<span class="badge text-bg-warning">Unassigned</span>{% if a.suggested_app_id %} <button class="btn btn-outline-primary btn-sm py-0" name="accept_suggestion" value="{{ a.pk }}" title="All tagged alerts in this account use {{ a.suggested_app_id }}">Use {{ a.suggested_app_id }}</button>{% endif %}{% else %}<span class="text-muted">Not needed</span>{% endif %}</td>
+        <td class="small">{% for id in a.app_ids|slice:":3" %}<span class="badge text-bg-light border">{{ id }}</span> {% empty %}<span class="text-muted">none</span>{% endfor %}{% if a.seen_app_count > 3 %}<span class="text-muted">+{{ a.seen_app_count|add:"-3" }} more</span>{% endif %}</td>
+        <td class="text-end fw-semibold">{{ a.untagged_open|intcomma }}</td>
+        <td class="text-end {% if a.untagged_critical_high %}text-danger fw-semibold{% endif %}">{{ a.untagged_critical_high|intcomma }}</td>
+        <td class="text-end {% if a.untagged_past_slo %}text-overdue{% endif %}">{{ a.untagged_past_slo|intcomma }}</td>
+        <td class="text-end">{{ a.open_count|intcomma }}</td>
       </tr>
     {% empty %}<tr><td colspan="10" class="text-muted">No cloud accounts here.</td></tr>{% endfor %}
     </tbody>
@@ -57,14 +58,34 @@
 </form>
 {% endblock %}
 {% block scripts %}
+{% include "vulns/_app_picker_script.html" %}
 <script>
+  const total = {{ page.paginator.count }}, pageCount = {{ page|length }};
   const checks = () => [...document.querySelectorAll('.row-check')];
+  const selectAll = document.getElementById('select-all'), bar = document.getElementById('select-all-bar');
+  const picked = () => document.querySelector('.picker-value').value;
   const sync = () => {
-    const n = checks().filter(c => c.checked).length;
-    document.getElementById('assign-btn').disabled = n === 0;
-    document.getElementById('assign-count').textContent = n;
+    const n = selectAll.value ? total : checks().filter(c => c.checked).length;
+    document.getElementById('assign-count').textContent = n.toLocaleString();
+    document.getElementById('assign-btn').disabled = n === 0 || !picked();
+    const allOnPage = pageCount > 0 && checks().every(c => c.checked);
+    bar.hidden = !(allOnPage && total > pageCount);
+    document.getElementById('select-all-text').textContent = selectAll.value
+      ? `All ${total.toLocaleString()} matching accounts are selected. `
+      : `All ${pageCount} accounts on this page are selected. `;
+    document.getElementById('select-all-btn').textContent = selectAll.value
+      ? 'Clear selection' : `Select all ${total.toLocaleString()} matching accounts`;
   };
-  checks().forEach(c => c.addEventListener('change', sync));
-  document.getElementById('check-all').addEventListener('change', e => { checks().forEach(c => c.checked = e.target.checked); sync(); });
+  checks().forEach(c => c.addEventListener('change', () => { selectAll.value = ''; sync(); }));
+  document.getElementById('check-all').addEventListener('change', e => {
+    selectAll.value = ''; checks().forEach(c => c.checked = e.target.checked); sync();
+  });
+  document.getElementById('select-all-btn').addEventListener('click', () => {
+    if (selectAll.value) { selectAll.value = ''; checks().forEach(c => c.checked = false); document.getElementById('check-all').checked = false; }
+    else { selectAll.value = '1'; }
+    sync();
+  });
+  document.addEventListener('picker:change', sync);
+  sync();
 </script>
 {% endblock %}

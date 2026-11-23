@@ -1,18 +1,24 @@
 import csv
 import io
-from collections import Counter
+import os
+import tempfile
+import zipfile
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.db.models import Count, Q
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils import timezone
+
+from core.models import EmailSettings
 
 from .columns import SEVERITY_ORDER
 from .models import Notification, Vulnerability
-from .queries import severity_rank, vulns_for_app
+from .queries import SORT_COLUMNS, iter_vulns, vulns_for_app
 
-EMAIL_TABLE_LIMIT = 200
+EMAIL_TABLE_LIMIT = 10
+ACCOUNT_LIST_LIMIT = 20
 
 CSV_COLUMNS = [
     ("Alert ID", "alert_id"), ("Provider", "provider"), ("Account ID", "account_number"),
@@ -38,13 +44,53 @@ def _cell(vuln, attr):
     return value
 
 
-def vulns_csv(vulns, columns=CSV_COLUMNS):
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
+def write_vulns_csv(handle, vulns, columns=CSV_COLUMNS):
+    writer = csv.writer(handle)
     writer.writerow([label for label, _ in columns])
     for vuln in vulns:
         writer.writerow([_cell(vuln, attr) for _, attr in columns])
+
+
+def vulns_csv(vulns, columns=CSV_COLUMNS):
+    buffer = io.StringIO()
+    write_vulns_csv(buffer, vulns, columns)
     return buffer.getvalue()
+
+
+def stream_vulns_csv(vulns, columns):
+    """Yields CSV lines one at a time for a streaming download."""
+
+    class Echo:
+        def write(self, value):
+            return value
+
+    writer = csv.writer(Echo())
+    yield writer.writerow([label for label, _ in columns])
+    for vuln in vulns:
+        yield writer.writerow([_cell(vuln, attr) for _, attr in columns])
+
+
+def attach_open_vulns(message, app, base_name):
+    """Attaches all open alerts. A large file is zipped; if it is still too big, returns False to link to it instead."""
+    limit = EmailSettings.load().max_attachment_mb * 1024 * 1024 * 3 // 4  # base64 grows attachments by a third
+    query = vulns_for_app(app.app_id).filter(status=Vulnerability.OPEN).browse().order_by(*SORT_COLUMNS)
+    with tempfile.NamedTemporaryFile("w+", newline="", suffix=".csv", encoding="utf-8") as csv_file:
+        write_vulns_csv(csv_file, iter_vulns(query))
+        csv_file.flush()
+        size = os.path.getsize(csv_file.name)
+        if size <= limit:
+            csv_file.seek(0)
+            message.attach(f"{base_name}.csv", csv_file.read(), "text/csv")
+            return True
+        with tempfile.NamedTemporaryFile(suffix=".zip") as zip_file:
+            with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.write(csv_file.name, f"{base_name}.csv")
+            zip_file.flush()
+            if os.path.getsize(zip_file.name) > limit:
+                return False
+            zip_file.seek(0)
+            message.attach(f"{base_name}.zip", zip_file.read(), "application/zip")
+            return True
 
 
 SUBJECT_PREFIX = {Notification.REMINDER: "Reminder: ", Notification.ESCALATION: "ESCALATION: "}
@@ -58,18 +104,19 @@ def send_app_notification(app, user, kind, to, cc=(), follow_up=None, remark="",
         raise NotificationNotAllowed(f"{app.app_id} has no email for this notification.")
 
     now = timezone.now()
-    open_vulns = list(
-        vulns_for_app(app.app_id)
-        .filter(status=Vulnerability.OPEN)
-        .select_related("cloud_account")
-        .annotate(sev_rank=severity_rank())
-        .order_by("sev_rank", "slo_date", "alert_id")
-    )
-    if not open_vulns:
+    open_query = vulns_for_app(app.app_id).filter(status=Vulnerability.OPEN)
+    top_vulns = list(open_query.browse().order_by(*SORT_COLUMNS)[:EMAIL_TABLE_LIMIT])
+    if not top_vulns:
         raise NotificationNotAllowed(f"{app.app_id} has no open vulnerabilities.")
-    counts = vulns_for_app(app.app_id).filter(status=Vulnerability.OPEN).aggregate(
+    counts = open_query.aggregate(
+        total=Count("id"),
         **{s.lower(): Count("id", filter=Q(severity=s)) for s in SEVERITY_ORDER},
         past_slo=Count("id", filter=Q(slo_date__lt=now)),
+    )
+    total = counts["total"]
+    by_account = (
+        open_query.values("cloud_account__account_name", "cloud_account__account_id")
+        .annotate(n=Count("id")).order_by("-n")[:ACCOUNT_LIST_LIMIT]
     )
     to_owner = kind == Notification.ESCALATION or (follow_up is not None and follow_up.status == follow_up.ESCALATED)
     context = {
@@ -82,28 +129,27 @@ def send_app_notification(app, user, kind, to, cc=(), follow_up=None, remark="",
         "escalation": escalation,
         "to": to,
         "cc": cc,
-        "total": len(open_vulns),
+        "total": total,
         "severity_counts": [(s, counts[s.lower()]) for s in SEVERITY_ORDER],
         "past_slo": counts["past_slo"],
-        "account_counts": Counter(f"{v.account_name} ({v.account_number})" for v in open_vulns).most_common(),
-        "vulns": open_vulns[:EMAIL_TABLE_LIMIT],
+        "account_counts": [
+            (f"{row['cloud_account__account_name']} ({row['cloud_account__account_id']})", row["n"]) for row in by_account
+        ],
+        "vulns": top_vulns,
         "limit": EMAIL_TABLE_LIMIT,
-        "truncated": len(open_vulns) > EMAIL_TABLE_LIMIT,
+        "truncated": total > EMAIL_TABLE_LIMIT,
+        "download_url": f"{settings.SITE_URL}{reverse('app_export', args=[app.app_id])}?status=open",
         "site_url": settings.SITE_URL,
         "sent_at": now,
     }
     subject = (
-        f"[Herald] {SUBJECT_PREFIX.get(kind, '')}{app.app_id}: {len(open_vulns)} open container vulnerabilities "
+        f"[Herald] {SUBJECT_PREFIX.get(kind, '')}{app.app_id}: {total} open container vulnerabilities "
         f"({counts['past_slo']} past SLO)"
     )
-    message = EmailMultiAlternatives(
-        subject=subject,
-        body=render_to_string("emails/notification.txt", context),
-        to=list(to),
-        cc=list(cc),
-    )
+    message = EmailMultiAlternatives(subject=subject, to=list(to), cc=list(cc))
+    context["attached"] = attach_open_vulns(message, app, f"{app.app_id}_open_vulnerabilities_{now:%Y%m%d}")
+    message.body = render_to_string("emails/notification.txt", context)
     message.attach_alternative(render_to_string("emails/notification.html", context), "text/html")
-    message.attach(f"{app.app_id}_open_vulnerabilities_{now:%Y%m%d}.csv", vulns_csv(open_vulns), "text/csv")
 
     log = Notification(
         app_id=app.app_id,
@@ -114,7 +160,7 @@ def send_app_notification(app, user, kind, to, cc=(), follow_up=None, remark="",
         recipients=", ".join(to),
         cc=", ".join(cc),
         subject=subject[:255],
-        vuln_count=len(open_vulns),
+        vuln_count=total,
         past_slo_count=counts["past_slo"],
     )
     try:

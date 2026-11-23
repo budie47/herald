@@ -9,4 +9,12 @@
     <button class="btn btn-primary">Save</button>
   </form>
 </div></div>
+<div class="card mt-3"><div class="card-body">
+  <h2 class="h5">Remediated alert retention</h2>
+  <p class="small text-muted">After the retention period, Herald keeps a compact record (alert, account, App ID, asset, CVE, package, severity and dates) and removes the remaining scan details. If the alert returns in a later scan, its details come back.</p>
+  <p class="small"><strong>{{ archive_eligible }}</strong> remediated alert{{ archive_eligible|pluralize }} {{ archive_eligible|pluralize:"is,are" }} past the retention period.</p>
+  <form method="post" action="{% url 'settings_archive_now' %}">{% csrf_token %}
+    <button class="btn btn-outline-primary btn-sm" {% if not archive_eligible %}disabled{% endif %} onclick="return confirm('Archive {{ archive_eligible }} remediated alerts? Their full scan details will be removed.')">Archive now</button>
+  </form>
+</div></div>
 {% endblock %}

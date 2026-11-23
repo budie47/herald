@@ -26,7 +26,7 @@
   </tr></table>
   <p style="margin-bottom:4px"><strong>Cloud accounts</strong></p>
   <ul style="margin-top:0">{% for account, n in account_counts %}<li>{{ account }}: {{ n }}</li>{% endfor %}</ul>
-  <p style="color:#6c757d">{% if truncated %}The first {{ limit }} of {{ total }} are listed below. {% endif %}All open vulnerabilities are in the attached CSV.</p>
+  <p style="color:#6c757d">The {{ vulns|length }} highest priority of {{ total }} open vulnerabilities are listed below. {% if attached %}All of them are in the attached file.{% else %}The full list is too large to attach. <a href="{{ download_url }}">Sign in to download it</a>.{% endif %}</p>
   <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
     <tr style="background:#212529;color:#fff;text-align:left">
       <th>Severity</th><th>CVE</th><th>Account</th><th>Package</th><th>Current &rarr; Recommended</th><th>Image / Asset</th><th>Env</th><th>Days open</th><th>SLO date</th>

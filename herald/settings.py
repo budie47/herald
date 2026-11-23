@@ -1,4 +1,6 @@
 import os
+import sys
+import tempfile
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,7 +100,10 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MESSAGE_STORAGE = "django.contrib.messages.storage.session.SessionStorage"
-UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+HERALD_UPLOAD_DIR = os.environ.get("HERALD_UPLOAD_DIR", str(Path(tempfile.gettempdir()) / "herald-uploads"))
+FILE_UPLOAD_TEMP_DIR = os.environ.get("HERALD_UPLOAD_DIR") or None
+HERALD_JOBS_EAGER = "test" in sys.argv  # tests run background jobs inline
 
 LOGGING = {
     "version": 1,

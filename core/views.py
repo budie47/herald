@@ -20,9 +20,16 @@ def general_settings(request):
     form = AppSettingsForm(request.POST or None, instance=AppSettings.load())
     if request.method == "POST" and form.is_valid():
         form.save()
+        if "not_seen_days" in form.changed_data:
+            from vulns import jobs
+
+            jobs.enqueue(jobs.SUMMARIES, {}, request.user)
         messages.success(request, "Settings saved.")
         return redirect("settings_general")
-    return render(request, "settings/general.html", {"form": form, "section": "general"})
+    from vulns.archive import eligible
+
+    context = {"form": form, "section": "general", "archive_eligible": eligible().count()}
+    return render(request, "settings/general.html", context)
 
 
 @admin_required

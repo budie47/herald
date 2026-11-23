@@ -1,4 +1,6 @@
 import io
+from unittest import mock
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.core import mail
@@ -9,14 +11,18 @@ from django.utils import timezone
 from openpyxl import Workbook
 
 from accounts.models import Role, User
-from core.models import AppSettings
+from core.models import AppSettings, EmailSettings
 
 from . import assignment, followups, lifecycle
 from .columns import COLUMNS, REQUIRED
-from .models import AccountAssignment, Application, CloudAccount, FollowUp, FollowUpEvent, Notification, Vulnerability
+from .models import (
+    AccountAssignment, AlertSummary, Application, Asset, CloudAccount, CveRecord, FollowUp, FollowUpEvent, ImportFile,
+    ImportRun, Job, Notification, PlannedRemediation, Vulnerability,
+)
 from .notify import NotificationNotAllowed
 from .parsing import FileFormatError, normalize_account_id, normalize_provider, parse_file, to_datetime
 from .queries import followup_cutoff, vulns_for_app
+from . import archive, queries, summaries
 
 HEADERS = ["Alert ID", "Account ID", "Account Name", "App ID", "Asset ID", "Severity", "CVE ID", "Last Scan"]
 AWS_A, AWS_B = "111111111111", "222222222222"
@@ -36,6 +42,18 @@ def csv_file(rows, headers=HEADERS, name="scan.csv", preamble=""):
 class BrokenBackend(BaseEmailBackend):
     def send_messages(self, email_messages):
         raise OSError("SMTP down")
+
+
+def finish_import(user, *files):
+    run = lifecycle.get_or_create_draft(user)
+    for f in files:
+        lifecycle.add_file(run, f, user)
+    run.refresh_from_db()
+    plan = run.plan
+    ImportRun.objects.filter(pk=run.pk).update(expected_total=run.unique_rows)
+    lifecycle.finalize(run, user, confirm_text=lifecycle.CONFIRM_WORD)
+    summaries.refresh()
+    return plan
 
 
 class ParsingTests(TestCase):
@@ -118,12 +136,7 @@ class LifecycleTests(TestCase):
         self.user = User.objects.create_superuser("admin@example.com", "pw-Example-123")
 
     def run_import(self, *files):
-        run = lifecycle.get_or_create_draft(self.user)
-        for f in files:
-            lifecycle.add_file(run, f, self.user)
-        plan = lifecycle.build_plan(run)
-        lifecycle.finalize(run, self.user)
-        return plan
+        return finish_import(self.user, *files)
 
     def status(self, alert_id):
         return Vulnerability.objects.get(alert_id=alert_id).status
@@ -131,7 +144,7 @@ class LifecycleTests(TestCase):
     def test_remediated_only_on_newer_scan_of_same_account_and_asset(self):
         self.run_import(csv_file([row("A1"), row("A2"), row("B1", account=AWS_B)]))
         plan = self.run_import(csv_file([row("A1", scan="2026-10-01")]))
-        self.assertEqual([v.alert_id for v, _ in plan.remediated], ["A2"])
+        self.assertEqual(plan["remediated"], 1)
         self.assertEqual(self.status("A2"), "remediated")
         self.assertEqual(self.status("B1"), "open")  # same Asset ID, different account
         self.assertEqual(Vulnerability.objects.get(alert_id="A2").remediated_at, datetime(2026, 10, 1, tzinfo=dt_timezone.utc))
@@ -139,8 +152,8 @@ class LifecycleTests(TestCase):
     def test_older_file_changes_nothing(self):
         self.run_import(csv_file([row("A1", scan="2026-10-01")]))
         plan = self.run_import(csv_file([row("A1", severity="Critical"), row("A0")]))
-        self.assertEqual(len(plan.skipped), 1)
-        self.assertEqual(plan.remediated, [])
+        self.assertEqual(plan["skipped"], 1)
+        self.assertEqual(plan["remediated"], 0)
         self.assertEqual(Vulnerability.objects.get(alert_id="A1").severity, "High")
 
     def test_reopened_when_seen_in_newer_scan(self):
@@ -148,7 +161,7 @@ class LifecycleTests(TestCase):
         self.run_import(csv_file([row("A2", scan="2026-10-01")]))
         self.assertEqual(self.status("A1"), "remediated")
         plan = self.run_import(csv_file([row("A1", scan="2026-11-01"), row("A2", scan="2026-11-01")]))
-        self.assertEqual(len(plan.reopened), 1)
+        self.assertEqual(plan["reopened"], 1)
         a1 = Vulnerability.objects.get(alert_id="A1")
         self.assertEqual(a1.status, "open")
         self.assertIsNotNone(a1.reopened_at)
@@ -157,21 +170,21 @@ class LifecycleTests(TestCase):
     def test_rejected_row_never_counts_as_fix(self):
         self.run_import(csv_file([row("A1"), row("A2")]))
         plan = self.run_import(csv_file([row("A1", scan="2026-10-01"), row("A2", scan="garbage")]))
-        self.assertEqual(plan.remediated, [])
+        self.assertEqual(plan["remediated"], 0)
         self.assertEqual(self.status("A2"), "open")
 
     def test_rejected_row_with_no_account_or_asset_blocks_remediation(self):
         self.run_import(csv_file([row("A1"), row("A2")]))
         plan = self.run_import(csv_file([row("A1", scan="2026-10-01"), ["A9", "", "", "", "", "High", "C", "2026-10-01"]]))
-        self.assertTrue(plan.protect_all)
-        self.assertEqual(plan.remediated, [])
+        self.assertTrue(plan["protect_all"])
+        self.assertEqual(plan["remediated"], 0)
 
     def test_later_batch_replaces_earlier_row(self):
         plan = self.run_import(
             csv_file([row("A1", severity="Low")], name="b1.csv"),
             csv_file([row("A1", severity="Critical")], name="b2.csv"),
         )
-        self.assertEqual(len(plan.new), 1)
+        self.assertEqual(plan["new"], 1)
         self.assertEqual(Vulnerability.objects.get(alert_id="A1").severity, "Critical")
 
     def test_account_name_change_does_not_create_new_account(self):
@@ -196,15 +209,11 @@ class AssignmentTests(TestCase):
         self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
         self.app = Application.objects.create(app_id="APP-1", owner_email="owner@example.com")
         self.other = Application.objects.create(app_id="APP-2", owner_email="other@example.com")
-        run = lifecycle.get_or_create_draft(self.admin)
-        lifecycle.add_file(run, csv_file([
-            row("U1"), row("T1", app="APP-2"), row("X1", account=AWS_B),
-        ]), self.admin)
-        lifecycle.finalize(run, self.admin)
+        finish_import(self.admin, csv_file([row("U1"), row("T1", app="APP-2"), row("X1", account=AWS_B)]))
         self.account = CloudAccount.objects.get(account_id=AWS_A)
 
     def owner(self, alert_id):
-        return Vulnerability.objects.with_owner().get(alert_id=alert_id).owner_app_id
+        return Vulnerability.objects.get(alert_id=alert_id).owner_app_id
 
     def test_untagged_inherit_and_own_tag_wins(self):
         self.assertIsNone(self.owner("U1"))
@@ -217,9 +226,7 @@ class AssignmentTests(TestCase):
 
     def test_future_untagged_alerts_follow_assignment(self):
         assignment.assign([self.account.pk], self.app, self.admin)
-        run = lifecycle.get_or_create_draft(self.admin)
-        lifecycle.add_file(run, csv_file([row("U1", scan="2026-10-01"), row("U2", scan="2026-10-01")]), self.admin)
-        lifecycle.finalize(run, self.admin)
+        finish_import(self.admin, csv_file([row("U1", scan="2026-10-01"), row("U2", scan="2026-10-01")]))
         self.assertEqual(self.owner("U2"), "APP-1")
 
     def test_multiple_accounts_can_share_one_app(self):
@@ -229,6 +236,7 @@ class AssignmentTests(TestCase):
         self.assertEqual(ids, {"U1", "X1"})
 
     def test_mixed_account_warning(self):
+        self.account.refresh_from_db()
         result = assignment.preview(CloudAccount.objects.filter(pk=self.account.pk), self.app)
         self.assertEqual([a.pk for a in result["mixed"]], [self.account.pk])
 
@@ -286,7 +294,7 @@ class AssignmentTests(TestCase):
     def test_all_pages_render_with_unassigned_data(self):
         self.client.force_login(self.admin)
         for url in ("/", "/applications/", "/applications/APP-2/", "/cloud-accounts/", "/cloud-accounts/?state=all",
-                    f"/cloud-accounts/{AWS_A}/", "/imports/", "/imports/1/"):
+                    f"/cloud-accounts/{AWS_A}/", "/imports/", f"/imports/{ImportRun.objects.first().pk}/"):
             self.assertEqual(self.client.get(url).status_code, 200, url)
 
 
@@ -330,9 +338,7 @@ class FollowUpTests(TestCase):
             app_id="APP-1", support_team="Payments Support", support_emails="support@example.com",
             owner_name="Owner", owner_email="owner@example.com", extra_emails="extra@example.com",
         )
-        run = lifecycle.get_or_create_draft(self.admin)
-        lifecycle.add_file(run, csv_file([row("A1", app="APP-1"), row("A2", app="APP-1")]), self.admin)
-        lifecycle.finalize(run, self.admin)
+        finish_import(self.admin, csv_file([row("A1", app="APP-1"), row("A2", app="APP-1")]))
 
     def case(self):
         return FollowUp.objects.get(application=self.app)
@@ -465,3 +471,224 @@ class FollowUpTests(TestCase):
             step()
             for url in urls:
                 self.assertEqual(self.client.get(url).status_code, 200, url)
+
+
+class ScaleTests(TestCase):
+    """The behaviour the 6M design depends on."""
+
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+
+    def test_unchanged_alert_is_not_rewritten_but_counts_as_seen(self):
+        finish_import(self.admin, csv_file([row("A1", scan="2026-09-01")]))
+        before = Vulnerability.objects.values_list("updated_at", "last_scan").get(alert_id="A1")
+        finish_import(self.admin, csv_file([row("A1", scan="2026-10-01")]))
+        vuln = Vulnerability.objects.browse().get(alert_id="A1")
+        self.assertEqual((vuln.updated_at, vuln.last_scan), before)
+        self.assertEqual(vuln.seen_scan, datetime(2026, 10, 1, tzinfo=dt_timezone.utc))
+
+    def test_changed_alert_is_updated(self):
+        finish_import(self.admin, csv_file([row("A1", severity="Low")]))
+        finish_import(self.admin, csv_file([row("A1", scan="2026-10-01", severity="High")]))
+        vuln = Vulnerability.objects.get(alert_id="A1")
+        self.assertEqual((vuln.severity, vuln.severity_rank), ("High", 1))
+
+    def test_older_file_after_unchanged_scan_remediates_nothing(self):
+        finish_import(self.admin, csv_file([row("A1"), row("A2")]))
+        finish_import(self.admin, csv_file([row("A1", scan="2026-11-01"), row("A2", scan="2026-11-01")]))
+        plan = finish_import(self.admin, csv_file([row("A1", scan="2026-10-01")]))
+        self.assertEqual((plan["remediated"], plan["skipped"]), (0, 1))
+        self.assertEqual(Vulnerability.objects.get(alert_id="A2").status, "open")
+
+    def test_duplicates_keep_newest_scan_even_when_uploaded_first(self):
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", scan="2026-10-01", severity="High")], name="new.csv"), self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", scan="2026-09-01", severity="Low")], name="old.csv"), self.admin)
+        run.refresh_from_db()
+        self.assertEqual((run.unique_rows, run.duplicates_count), (1, 1))
+        lifecycle.finalize(run, self.admin)
+        self.assertEqual(Vulnerability.objects.get(alert_id="A1").severity, "High")
+
+    def test_duplicates_within_one_file(self):
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", severity="Low"), row("A1", severity="High")]), self.admin)
+        run.refresh_from_db()
+        self.assertEqual((run.unique_rows, run.duplicates_count), (1, 1))
+
+    def test_batch_mismatch_blocks_remediation_until_reason_given(self):
+        finish_import(self.admin, csv_file([row(f"A{i}") for i in range(10)]))
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row(f"A{i}", scan="2026-10-01") for i in range(9)]), self.admin)
+        run.refresh_from_db()
+        ImportRun.objects.filter(pk=run.pk).update(expected_total=10)
+        run.refresh_from_db()
+        self.assertEqual(run.plan["remediated"], 1)
+        with self.assertRaises(ValueError):
+            lifecycle.finalize(run, self.admin)
+        self.assertEqual(Vulnerability.objects.filter(status="remediated").count(), 0)
+        lifecycle.finalize(run, self.admin, override_reason="One alert was fixed")
+        self.assertEqual(Vulnerability.objects.filter(status="remediated").count(), 1)
+
+    def test_large_remediation_needs_typed_confirmation(self):
+        finish_import(self.admin, csv_file([row(f"A{i}") for i in range(10)]))
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A0", scan="2026-10-01")]), self.admin)
+        run.refresh_from_db()
+        ImportRun.objects.filter(pk=run.pk).update(expected_total=1)
+        run.refresh_from_db()
+        with self.assertRaises(ValueError):
+            lifecycle.finalize(run, self.admin)
+        lifecycle.finalize(run, self.admin, confirm_text=lifecycle.CONFIRM_WORD)
+        self.assertEqual(Vulnerability.objects.filter(status="remediated").count(), 9)
+
+    def test_skip_remediation_applies_changes_and_keeps_alerts_open(self):
+        finish_import(self.admin, csv_file([row("A1"), row("A2")]))
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", scan="2026-10-01", severity="Critical")]), self.admin)
+        run.refresh_from_db()
+        lifecycle.finalize(run, self.admin, skip_remediation=True)
+        self.assertEqual(Vulnerability.objects.get(alert_id="A2").status, "open")
+        self.assertEqual(Vulnerability.objects.get(alert_id="A1").severity, "Critical")
+        plan = finish_import(self.admin, csv_file([row("A1", scan="2026-11-01", severity="Critical")]))
+        self.assertEqual(plan["remediated"], 1)  # the skipped scan did not hide A2 from a later full import
+
+    def test_failed_file_blocks_remediation(self):
+        finish_import(self.admin, csv_file([row("A1"), row("A2")]))
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", scan="2026-10-01")]), self.admin)
+        broken = lifecycle.add_file(run, SimpleUploadedFile("bad.csv", b"no,useful,headers\n1,2,3\n"), self.admin)
+        self.assertEqual(broken.status, ImportFile.FAILED)
+        run.refresh_from_db()
+        self.assertTrue(run.plan["protect_all"])
+        self.assertEqual(run.plan["remediated"], 0)
+
+    def test_app_catalog_keeps_admin_values_and_flags_conflicts(self):
+        Application.objects.create(app_id="APP-7", name="Admin name", support_emails="s@example.com")
+        headers = HEADERS + ["App Service", "Business Service", "Department", "Instance"]
+        def line(alert, app, service, instance):
+            return row(alert, app=app) + [service, "Biz", "Dept", instance]
+        finish_import(self.admin, csv_file([
+            line("A1", "app-7", "Scan name", "i1"), line("A2", "APP-8", "Claims", "i2"),
+            line("A3", "APP-9", "One", "i3"), line("A4", "APP-9", "Two", "i4"),
+        ], headers=headers))
+        self.assertEqual(Application.objects.get(app_id="APP-7").name, "Admin name")  # lower-case tag was normalized
+        created = Application.objects.get(app_id="APP-8")
+        self.assertEqual((created.name, created.business_service, created.source, created.has_email), ("Claims", "Biz", "scan", False))
+        self.assertTrue(Application.objects.get(app_id="APP-9").scan_conflict)
+
+    def test_assign_to_app_without_contacts_cannot_email(self):
+        finish_import(self.admin, csv_file([row("U1"), row("T1", app="APP-3", account=AWS_B)]))
+        app = Application.objects.get(app_id="APP-3")
+        assignment.assign([CloudAccount.objects.get(account_id=AWS_A).pk], app, self.admin)
+        self.assertEqual(Vulnerability.objects.get(alert_id="U1").owner_app_id, "APP-3")
+        with self.assertRaises(NotificationNotAllowed):
+            followups.notify_support(app, self.admin)
+        self.client.force_login(self.admin)
+        self.assertContains(self.client.get("/"), "no support email")
+
+    def test_picker_search_and_suggestion(self):
+        finish_import(self.admin, csv_file([row("U1"), row("T1", app="APP-5")]))
+        Application.objects.create(app_id="APP-99", name="Customer Portal", support_emails="s@example.com")
+        account = CloudAccount.objects.get(account_id=AWS_A)
+        self.assertEqual(account.suggested_app_id, "APP-5")
+        self.client.force_login(self.admin)
+        data = self.client.get("/cloud-accounts/app-search/", {"accounts": account.pk}).json()
+        self.assertEqual(data["suggested"][0]["app_id"], "APP-5")
+        data = self.client.get("/cloud-accounts/app-search/", {"q": "portal"}).json()
+        self.assertEqual([m["app_id"] for m in data["matches"]], ["APP-99"])
+        self.assertTrue(data["matches"][0]["has_support"])
+
+    def test_select_all_matching_assigns_every_account(self):
+        finish_import(self.admin, csv_file([row(f"A{i}", account=str(100000000000 + i)) for i in range(30)]))
+        app = Application.objects.create(app_id="APP-1", support_emails="s@example.com")
+        self.client.force_login(self.admin)
+        response = self.client.post("/cloud-accounts/assign/", {
+            "select_all": "1", "state": "needs", "application": app.pk, "confirm": "1",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(CloudAccount.objects.filter(application=app).count(), 30)
+        self.assertEqual(Vulnerability.objects.filter(owner_app_id="APP-1").count(), 30)
+
+    def test_keyset_pages_walk_every_row_once_and_back(self):
+        finish_import(self.admin, csv_file([row(f"A{i:02}", app="APP-1", severity=("High" if i % 2 else "Low")) for i in range(25)]))
+        self.client.force_login(self.admin)
+        seen, url = [], "/applications/APP-1/?per_page=10"
+        pages = []
+        while url:
+            response = self.client.get(url)
+            page = response.context["page"]
+            pages.append([v.alert_id for v in page])
+            seen += pages[-1]
+            url = f"/applications/APP-1/?per_page=10&{urlencode({'after': page.next_cursor})}" if page.has_next else None
+        self.assertEqual(len(seen), 25)
+        self.assertEqual(len(set(seen)), 25)
+        back = self.client.get(f"/applications/APP-1/?per_page=10&{urlencode({'before': response.context['page'].previous_cursor})}")
+        self.assertEqual([v.alert_id for v in back.context["page"]], pages[1])
+
+    def test_cve_and_alert_searches_and_broad_search_timeout(self):
+        finish_import(self.admin, csv_file([row("A1", app="APP-1"), row("A2", app="APP-1")]))
+        self.client.force_login(self.admin)
+        page = self.client.get("/applications/APP-1/", {"q": "cve-a2"}).context["page"]
+        self.assertEqual([v.alert_id for v in page], ["A2"])
+        page = self.client.get("/applications/APP-1/", {"q": "A1"}).context["page"]
+        self.assertEqual([v.alert_id for v in page], ["A1"])
+        slow = Vulnerability.objects.extra(where=["pg_sleep(0.1) IS NOT NULL"])
+        with mock.patch("vulns.queries.SEARCH_TIMEOUT_MS", 1):
+            self.assertIsNone(queries._fetch(slow, True))
+        self.assertEqual(Vulnerability.objects.count(), 2)  # the connection still works
+
+    def test_summary_matches_alerts_after_import_and_assignment(self):
+        finish_import(self.admin, csv_file([row("A1", app="APP-1"), row("A2", severity="Critical"), row("B1", account=AWS_B)]))
+        app = Application.objects.get(app_id="APP-1")
+        assignment.assign([CloudAccount.objects.get(account_id=AWS_A).pk], app, self.admin)
+        owned = sum(AlertSummary.objects.filter(owner_app_id="APP-1", status="open").values_list("total", flat=True))
+        self.assertEqual(owned, Vulnerability.objects.filter(owner_app_id="APP-1", status="open").count())
+        self.assertEqual(owned, 2)
+
+    def test_streaming_export_contains_all_filtered_rows(self):
+        finish_import(self.admin, csv_file([row(f"A{i}", app="APP-1") for i in range(5)]))
+        self.client.force_login(self.admin)
+        response = self.client.get("/applications/APP-1/export.csv?status=open")
+        body = b"".join(response.streaming_content).decode()
+        self.assertEqual(len(body.strip().splitlines()), 6)
+
+    def test_email_shows_top_ten_and_attaches_all(self):
+        finish_import(self.admin, csv_file([row(f"A{i:02}", app="APP-1", severity=("Critical" if i < 3 else "Low")) for i in range(15)]))
+        Application.objects.filter(app_id="APP-1").update(support_emails="s@example.com")
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            followups.notify_support(Application.objects.get(app_id="APP-1"), self.admin)
+        message = mail.outbox[0]
+        self.assertEqual(message.body.count("[Critical]") + message.body.count("[Low]"), 10)
+        self.assertEqual(message.body.count("[Critical]"), 3)
+        self.assertEqual(len(message.attachments[0][1].strip().splitlines()), 16)
+
+    def test_oversized_attachment_is_zipped_then_linked(self):
+        finish_import(self.admin, csv_file([row(f"A{i}", app="APP-1") for i in range(20)]))
+        Application.objects.filter(app_id="APP-1").update(support_emails="s@example.com")
+        app = Application.objects.get(app_id="APP-1")
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            with mock.patch("vulns.notify.os.path.getsize", side_effect=[10 * 1024 * 1024, 1024]):
+                followups.notify_support(app, self.admin)
+            self.assertTrue(mail.outbox[0].attachments[0][0].endswith(".zip"))
+            with mock.patch("vulns.notify.os.path.getsize", return_value=10 * 1024 * 1024):
+                followups.notify_support(app, self.admin)
+        self.assertEqual(mail.outbox[1].attachments, [])
+        self.assertIn("/applications/APP-1/export.csv", mail.outbox[1].body)
+
+    def test_retention_keeps_compact_record_and_restores_on_reopen(self):
+        finish_import(self.admin, csv_file([row("A1"), row("A2")]))
+        finish_import(self.admin, csv_file([row("A2", scan="2026-10-01")]))
+        Vulnerability.objects.filter(alert_id="A1").update(remediated_at=timezone.now() - timedelta(days=91))
+        self.assertEqual(archive.eligible().count(), 1)
+        archive.run_archive()
+        vuln = Vulnerability.objects.browse().get(alert_id="A1")
+        self.assertIsNotNone(vuln.archived_at)
+        self.assertIsNone(vuln.context)
+        self.assertEqual(vuln.cve, "CVE-A1")
+        finish_import(self.admin, csv_file([row("A1", scan="2026-11-20"), row("A2", scan="2026-11-20")]))
+        vuln = Vulnerability.objects.browse().get(alert_id="A1")
+        self.assertEqual(vuln.status, "open")
+        self.assertIsNone(vuln.archived_at)
+        self.assertIsNotNone(vuln.context)

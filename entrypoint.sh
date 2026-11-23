@@ -19,7 +19,14 @@ else:
     sys.exit("Database is not reachable")
 PY
 
-python manage.py migrate --noinput
-python manage.py bootstrap
+if [ "${HERALD_RUN_MIGRATIONS:-1}" = "1" ]; then
+    python manage.py migrate --noinput
+    python manage.py bootstrap
+else
+    until python manage.py migrate --check >/dev/null 2>&1; do
+        echo "Waiting for migrations..."
+        sleep 5
+    done
+fi
 
 exec "$@"

@@ -1,10 +1,12 @@
 import re
+from datetime import datetime, timezone as dt_timezone
 
 from django.conf import settings
 from django.db import models
-from django.db.models import CharField, F, Q, Value
-from django.db.models.functions import Coalesce, NullIf
+from django.db.models import Q
 from django.utils import timezone
+
+from .columns import OTHER_SEVERITY_RANK
 
 
 def split_emails(value):
@@ -38,6 +40,8 @@ class Application(models.Model):
     business_service = models.CharField(max_length=200, blank=True)
     department = models.CharField(max_length=200, blank=True)
     notes = models.TextField(blank=True)
+    source = models.CharField(max_length=10, default="manual")  # "scan" when added automatically from an import
+    scan_conflict = models.BooleanField(default=False, help_text="The scan data has more than one name for this App ID.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -58,6 +62,10 @@ class Application(models.Model):
         return unique_emails([*self.support_email_list(), self.owner_email, *self.extra_email_list()])
 
     @property
+    def has_contacts(self):
+        return bool(self.support_email_list() or self.owner_email)
+
+    @property
     def has_email(self):
         """Notifications start with the support team, so a support email is required to send."""
         return bool(self.support_email_list())
@@ -76,11 +84,23 @@ class CloudAccount(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
     assigned_at = models.DateTimeField(null=True, blank=True)
+    open_count = models.BigIntegerField(default=0)
+    untagged_open = models.BigIntegerField(default=0)
+    untagged_critical_high = models.BigIntegerField(default=0)
+    untagged_past_slo = models.BigIntegerField(default=0)
+    seen_app_ids = models.JSONField(default=list, blank=True)  # [{"app_id": ..., "tagged": n}], most alerts first
+    seen_app_count = models.PositiveIntegerField(default=0)
+    suggested_app_id = models.CharField(max_length=100, blank=True)  # set only when one App ID is clear
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["account_name", "account_id"]
+        indexes = [models.Index(fields=["application", "untagged_open"], name="account_needs_assignment")]
+
+    @property
+    def app_ids(self):
+        return [item["app_id"] for item in self.seen_app_ids]
 
     def __str__(self):
         return f"{self.account_name} ({self.account_id})"
@@ -118,6 +138,14 @@ class ImportRun(models.Model):
     reopened_count = models.PositiveIntegerField(default=0)
     remediated_count = models.PositiveIntegerField(default=0)
     skipped_count = models.PositiveIntegerField(default=0)
+    duplicates_count = models.PositiveIntegerField(default=0)
+    unique_rows = models.PositiveIntegerField(default=0)
+    expected_total = models.PositiveIntegerField(null=True, blank=True, help_text="Total alerts shown in Power BI.")
+    override_reason = models.TextField(blank=True)
+    remediation_skipped = models.BooleanField(default=False)
+    phase = models.CharField(max_length=12, blank=True)  # "", planning, finalizing
+    plan = models.JSONField(default=dict, blank=True)
+    plan_ready = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-id"]
@@ -132,17 +160,32 @@ class ImportRun(models.Model):
     def is_draft(self):
         return self.status == self.DRAFT
 
+    @property
+    def is_busy(self):
+        return bool(self.phase) or self.files.filter(status__in=[ImportFile.QUEUED, ImportFile.PROCESSING]).exists()
+
+    @property
+    def count_matches(self):
+        return self.expected_total is not None and self.expected_total == self.unique_rows
+
 
 class ImportFile(models.Model):
+    QUEUED, PROCESSING, DONE, FAILED = "queued", "processing", "done", "failed"
+    STATUS_CHOICES = [(QUEUED, "Queued"), (PROCESSING, "Reading"), (DONE, "Done"), (FAILED, "Failed")]
+
     run = models.ForeignKey(ImportRun, on_delete=models.CASCADE, related_name="files")
     filename = models.CharField(max_length=255)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=DONE)
+    stored_path = models.CharField(max_length=500, blank=True)
+    size_bytes = models.BigIntegerField(default=0)
+    error = models.TextField(blank=True)
     header_row = models.PositiveIntegerField(default=1)
     rows_read = models.PositiveIntegerField(default=0)
     accepted = models.PositiveIntegerField(default=0)
     rejected = models.PositiveIntegerField(default=0)
-    errors = models.JSONField(default=list, blank=True)  # [{"row", "reason", "alert_id", "asset_id"}]
+    duplicates = models.PositiveIntegerField(default=0)
     unknown_columns = models.JSONField(default=list, blank=True)
     missing_columns = models.JSONField(default=list, blank=True)
 
@@ -150,34 +193,133 @@ class ImportFile(models.Model):
         ordering = ["id"]
 
 
-class StagedRow(models.Model):
-    """A row waiting in a draft import. A later file replaces an earlier row with the same Alert ID."""
+class RejectedRow(models.Model):
+    """A row that could not be read. It is listed for the user and blocks remediation on what it may belong to."""
 
-    run = models.ForeignKey(ImportRun, on_delete=models.CASCADE, related_name="staged_rows")
-    file = models.ForeignKey(ImportFile, on_delete=models.CASCADE, related_name="staged_rows")
-    row_number = models.PositiveIntegerField()
-    alert_id = models.CharField(max_length=200)
-    app_id = models.CharField(max_length=100, blank=True)
+    run = models.ForeignKey(ImportRun, on_delete=models.CASCADE, related_name="rejected_rows")
+    file = models.ForeignKey(ImportFile, on_delete=models.CASCADE, related_name="rejected_rows")
+    row = models.PositiveIntegerField()
+    reason = models.TextField()
+    alert_id = models.CharField(max_length=200, blank=True)
+    account_id = models.CharField(max_length=100, blank=True)
     asset_id = models.CharField(max_length=500, blank=True)
-    last_scan = models.DateTimeField(null=True, blank=True)
-    data = models.JSONField(default=dict)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["run", "alert_id"], name="unique_staged_alert")]
+        ordering = ["file_id", "row"]
+        indexes = [
+            models.Index(fields=["run", "account_id", "asset_id"], name="rejected_scope"),
+            models.Index(fields=["run", "asset_id"], name="rejected_asset"),
+            models.Index(fields=["run", "alert_id"], name="rejected_alert"),
+        ]
 
-    @property
-    def account_id(self):
-        return self.data["account_id"]
+
+class CveRecord(models.Model):
+    """One row per CVE, shared by every alert with that CVE."""
+
+    cve = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True)
+    link = models.CharField(max_length=500, blank=True)
+
+
+class PackageRecord(models.Model):
+    key = models.UUIDField(unique=True)
+    package = models.TextField(blank=True)
+    current_version = models.TextField(blank=True)
+    recommended_version = models.TextField(blank=True)
+    package_path = models.TextField(blank=True)
+    layer_id = models.TextField(blank=True)
+    layer_instruction = models.TextField(blank=True)
+
+
+class AlertContext(models.Model):
+    """The image, runtime and business details shared by the alerts of one workload."""
+
+    key = models.UUIDField(unique=True)
+    asset_type = models.TextField(blank=True)
+    instance = models.TextField(blank=True)
+    cluster = models.TextField(blank=True)
+    namespace = models.TextField(blank=True)
+    repository = models.TextField(blank=True)
+    registry = models.TextField(blank=True)
+    image = models.TextField(blank=True)
+    image_tag = models.TextField(blank=True)
+    image_created = models.TextField(blank=True)
+    os = models.TextField(blank=True)
+    os_version = models.TextField(blank=True)
+    os_end_of_life = models.TextField(blank=True)
+    participating_firm = models.TextField(blank=True)
+    country = models.TextField(blank=True)
+    cms = models.TextField(blank=True)
+    function = models.TextField(blank=True)
+    app_service = models.TextField(blank=True)
+    business_service = models.TextField(blank=True)
+    department = models.TextField(blank=True)
+    service_line = models.TextField(blank=True)
+    data_classification = models.TextField(blank=True)
+    data_qualification = models.TextField(blank=True)
+
+
+class Asset(models.Model):
+    """Tracks the newest scan per account + Asset ID, so an unchanged alert is not rewritten every week."""
+
+    cloud_account = models.ForeignKey(CloudAccount, on_delete=models.CASCADE, related_name="assets")
+    asset_id = models.CharField(max_length=500)
+    last_scan = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["cloud_account", "asset_id"], name="unique_account_asset")]
+
+
+class StagedAlert(models.Model):
+    """A row waiting in a draft. The newest Last Scan wins for an Alert ID, and a later file wins a tie."""
+
+    run = models.ForeignKey(ImportRun, on_delete=models.DO_NOTHING, db_constraint=False, related_name="staged_alerts")
+    file = models.ForeignKey(ImportFile, on_delete=models.DO_NOTHING, db_constraint=False, related_name="+")
+    row_number = models.PositiveIntegerField()
+    alert_id = models.CharField(max_length=200)
+    csb_id = models.CharField(max_length=100, blank=True)
+    account_id = models.CharField(max_length=100)
+    account_name = models.CharField(max_length=255)
+    provider = models.CharField(max_length=30, blank=True)
+    asset_id = models.CharField(max_length=500, blank=True)
+    app_id = models.CharField(max_length=100, blank=True)
+    environment = models.CharField(max_length=100, blank=True)
+    severity = models.CharField(max_length=30, blank=True)
+    severity_rank = models.SmallIntegerField(default=OTHER_SEVERITY_RANK)
+    exception = models.BooleanField(default=False)
+    ritm = models.CharField(max_length=100, blank=True)
+    alert_opened = models.DateTimeField(null=True)
+    slo_date = models.DateTimeField(null=True)
+    last_scan = models.DateTimeField(null=True)
+    cve_ref_id = models.BigIntegerField(null=True)
+    package_ref_id = models.BigIntegerField(null=True)
+    context_id = models.BigIntegerField(null=True)
+    fingerprint = models.UUIDField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["run", "alert_id"], name="unique_staged_alert_id")]
+
+
+class PlannedRemediation(models.Model):
+    """The preview list of alerts a draft would mark remediated."""
+
+    run = models.ForeignKey(ImportRun, on_delete=models.DO_NOTHING, db_constraint=False, related_name="+")
+    vulnerability = models.ForeignKey(
+        "Vulnerability", on_delete=models.DO_NOTHING, db_constraint=False, related_name="+"
+    )
+    old_scan = models.DateTimeField(null=True)
+    new_scan = models.DateTimeField()
+
+    class Meta:
+        indexes = [models.Index(fields=["run", "id"], name="planned_run")]
 
 
 class VulnerabilityQuerySet(models.QuerySet):
-    def with_owner(self):
-        """owner_app_id: the alert's own App ID, else its account's assigned App ID, else NULL (unassigned)."""
-        return self.annotate(
-            owner_app_id=Coalesce(
-                NullIf("app_id", Value("")), F("cloud_account__application__app_id"), output_field=CharField()
-            )
-        )
+    def browse(self):
+        return self.select_related("cloud_account", "asset_ref", "cve_ref", "package_ref", "context")
+
+
+FAR_FUTURE = datetime(9999, 1, 1, tzinfo=dt_timezone.utc)
 
 
 class Vulnerability(models.Model):
@@ -185,49 +327,62 @@ class Vulnerability(models.Model):
     STATUS_CHOICES = [(OPEN, "Open"), (REMEDIATED, "Remediated")]
 
     alert_id = models.CharField(max_length=200, unique=True)
-    cloud_account = models.ForeignKey(CloudAccount, on_delete=models.PROTECT, related_name="vulnerabilities")
-    app_id = models.CharField(
-        "App ID from scan", max_length=100, blank=True, db_index=True, help_text="Blank when the scanner has no App ID."
+    csb_id = models.CharField(max_length=100, blank=True)
+    cloud_account = models.ForeignKey(
+        CloudAccount, on_delete=models.PROTECT, db_index=False, related_name="vulnerabilities"
     )
-    asset_id = models.CharField(max_length=500, blank=True, db_index=True)
-    instance = models.CharField(max_length=255, blank=True)
-    image = models.CharField(max_length=500, blank=True)
-    cluster = models.CharField(max_length=255, blank=True)
-    namespace = models.CharField(max_length=255, blank=True)
-    environment = models.CharField(max_length=100, blank=True, db_index=True)
-    cve = models.CharField(max_length=100, blank=True, db_index=True)
-    cve_description = models.TextField(blank=True)
-    cve_link = models.CharField(max_length=500, blank=True)
-    severity = models.CharField(max_length=30, blank=True, db_index=True)
-    package = models.CharField(max_length=255, blank=True)
-    current_version = models.CharField(max_length=255, blank=True)
-    recommended_version = models.CharField(max_length=255, blank=True)
+    asset_ref = models.ForeignKey(Asset, null=True, blank=True, on_delete=models.PROTECT, db_index=False, related_name="+")
+    cve_ref = models.ForeignKey(
+        CveRecord, null=True, blank=True, on_delete=models.DO_NOTHING, db_constraint=False, db_index=False, related_name="+"
+    )
+    package_ref = models.ForeignKey(
+        PackageRecord, null=True, blank=True, on_delete=models.DO_NOTHING, db_constraint=False, db_index=False,
+        related_name="+",
+    )
+    context = models.ForeignKey(
+        AlertContext, null=True, blank=True, on_delete=models.DO_NOTHING, db_constraint=False, db_index=False,
+        related_name="+",
+    )
+    app_id = models.CharField("App ID from scan", max_length=100, blank=True, help_text="Blank when the scanner has none.")
+    owner_app_id = models.CharField(max_length=100, null=True, blank=True)  # own App ID, else the account's assignment
+    environment = models.CharField(max_length=100, blank=True)
+    severity = models.CharField(max_length=30, blank=True)
+    severity_rank = models.SmallIntegerField(default=OTHER_SEVERITY_RANK)
     exception = models.BooleanField(default=False)
     ritm = models.CharField("RITM number", max_length=100, blank=True)
     slo_date = models.DateTimeField(null=True, blank=True)
+    slo_sort = models.DateTimeField(default=FAR_FUTURE)  # slo_date without NULLs, for stable paging
     last_scan = models.DateTimeField(null=True, blank=True)
-    data = models.JSONField(default=dict, blank=True)
-
-    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=OPEN, db_index=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=OPEN)
     first_seen = models.DateTimeField()
-    last_seen = models.DateTimeField()
     remediated_at = models.DateTimeField(null=True, blank=True)
     remediated_import = models.ForeignKey(
-        ImportRun, null=True, blank=True, on_delete=models.SET_NULL, related_name="remediated_vulns"
+        ImportRun, null=True, blank=True, on_delete=models.SET_NULL, db_index=False, related_name="remediated_vulns"
     )
     reopened_at = models.DateTimeField(null=True, blank=True)
-    created_import = models.ForeignKey(ImportRun, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
-    updated_import = models.ForeignKey(ImportRun, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    archived_at = models.DateTimeField(null=True, blank=True)
+    fingerprint = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(default=timezone.now)
 
     objects = VulnerabilityQuerySet.as_manager()
 
     class Meta:
-        indexes = [models.Index(fields=["app_id", "status"])]
+        indexes = [
+            models.Index(fields=["owner_app_id", "status", "severity_rank", "slo_sort", "id"], name="vuln_owner_browse"),
+            models.Index(fields=["cloud_account", "status", "severity_rank", "slo_sort", "id"], name="vuln_account_browse"),
+            models.Index(fields=["asset_ref"], condition=Q(status="open"), name="vuln_open_asset"),
+            models.Index(fields=["cve_ref", "status"], name="vuln_cve_status"),
+            models.Index(
+                fields=["remediated_import"], condition=Q(remediated_import__isnull=False), name="vuln_remediated_import"
+            ),
+        ]
 
     def __str__(self):
         return self.alert_id
+
+    def _detail(self, relation, field):
+        return getattr(relation, field, "") if relation is not None else ""
 
     @property
     def account_number(self):
@@ -240,6 +395,58 @@ class Vulnerability(models.Model):
     @property
     def provider(self):
         return self.cloud_account.provider
+
+    @property
+    def asset_id(self):
+        return self._detail(self.asset_ref, "asset_id")
+
+    @property
+    def cve(self):
+        return self._detail(self.cve_ref, "cve")
+
+    @property
+    def cve_description(self):
+        return self._detail(self.cve_ref, "description")
+
+    @property
+    def cve_link(self):
+        return self._detail(self.cve_ref, "link")
+
+    @property
+    def package(self):
+        return self._detail(self.package_ref, "package")
+
+    @property
+    def current_version(self):
+        return self._detail(self.package_ref, "current_version")
+
+    @property
+    def recommended_version(self):
+        return self._detail(self.package_ref, "recommended_version")
+
+    @property
+    def image(self):
+        return self._detail(self.context, "image")
+
+    @property
+    def instance(self):
+        return self._detail(self.context, "instance")
+
+    @property
+    def cluster(self):
+        return self._detail(self.context, "cluster")
+
+    @property
+    def namespace(self):
+        return self._detail(self.context, "namespace")
+
+    @property
+    def seen_scan(self):
+        """An unchanged alert keeps its old last_scan; its asset holds the newest scan that still included it."""
+        asset_scan = self.asset_ref.last_scan if self.asset_ref_id else None
+        if self.status == self.OPEN and asset_scan and (not self.last_scan or asset_scan > self.last_scan):
+            return asset_scan
+        return self.last_scan
 
     @property
     def is_open(self):
@@ -265,11 +472,59 @@ class Vulnerability(models.Model):
     def display_status(self, not_seen_cutoff):
         if self.status == self.REMEDIATED:
             return "Remediated"
-        if self.last_scan and self.last_scan < not_seen_cutoff:
+        seen = self.seen_scan
+        if seen and seen < not_seen_cutoff:
             return "Not seen"
         if self.reopened_at:
             return "Reopened"
         return "Open"
+
+
+class AlertSummary(models.Model):
+    """Precomputed counts, so pages never count millions of alerts. owner_app_id is blank when unassigned."""
+
+    owner_app_id = models.CharField(max_length=100, blank=True)
+    cloud_account = models.ForeignKey(
+        CloudAccount, on_delete=models.DO_NOTHING, db_constraint=False, related_name="summaries"
+    )
+    provider = models.CharField(max_length=30, blank=True)
+    environment = models.CharField(max_length=100, blank=True)
+    severity = models.CharField(max_length=30, blank=True)
+    exception = models.BooleanField(default=False)
+    status = models.CharField(max_length=12)
+    total = models.BigIntegerField(default=0)
+    tagged = models.BigIntegerField(default=0)
+    past_slo = models.BigIntegerField(default=0)
+    untagged_past_slo = models.BigIntegerField(default=0)
+    not_seen = models.BigIntegerField(default=0)
+    reopened = models.BigIntegerField(default=0)
+    recent_remediated = models.BigIntegerField(default=0)
+    fix_seconds = models.BigIntegerField(default=0)
+    fix_count = models.BigIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["owner_app_id", "status"], name="summary_owner")]
+
+
+class Job(models.Model):
+    """Background work run by the worker service: imports, summaries, large assignments and bulk emails."""
+
+    QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
+    STATUS_CHOICES = [(QUEUED, "Queued"), (RUNNING, "Running"), (DONE, "Done"), (FAILED, "Failed")]
+
+    kind = models.CharField(max_length=20)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=QUEUED)
+    payload = models.JSONField(default=dict, blank=True)
+    message = models.TextField(blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["status", "id"], name="job_queue")]
 
 
 class FollowUp(models.Model):

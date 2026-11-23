@@ -27,6 +27,11 @@
     .nowrap { white-space: nowrap; }
     .navbar .nav-link, .navbar .small { white-space: nowrap; }
     @media (max-width: 1599.98px) { .navbar .nav-link > i, .navbar .role-badge { display: none; } }
+    .app-picker { position: relative; }
+    .picker-list { position: absolute; z-index: 1050; top: 100%; left: 0; right: 0; min-width: 320px; max-height: 360px; overflow-y: auto; background: #fff; border: 1px solid #ced4da; border-radius: .375rem; box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); margin-top: 2px; }
+    .picker-heading { padding: .35rem .75rem; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: #6c757d; background: #f8f9fa; }
+    .picker-option { padding: .4rem .75rem; font-size: .875rem; cursor: pointer; border-top: 1px solid #f1f3f5; }
+    .picker-option:hover, .picker-option.active { background: #e7f1ff; }
     .settings-nav .list-group-item.active { background: #212529; border-color: #212529; }
   </style>
 </head>

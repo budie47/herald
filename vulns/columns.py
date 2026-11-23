@@ -79,11 +79,12 @@ def normalize_header(value):
 HEADER_MAP = {normalize_header(label): key for label, key, _ in COLUMNS}
 HEADER_MAP.update(ALIASES)
 
-# Scanner columns stored as real database columns (for filtering/searching); everything is also kept in `data`.
-MODEL_FIELDS = [
-    "app_id", "asset_id", "instance", "image", "cluster", "namespace", "environment", "cve",
-    "cve_description", "cve_link", "severity", "package", "current_version", "recommended_version",
-    "exception", "ritm", "slo_date", "last_scan",
+# Repeated values live once in shared tables, and each alert points at them.
+PACKAGE_COLUMNS = ["package", "current_version", "recommended_version", "package_path", "layer_id", "layer_instruction"]
+CONTEXT_COLUMNS = [
+    "asset_type", "instance", "cluster", "namespace", "repository", "registry", "image", "image_tag", "image_created",
+    "os", "os_version", "os_end_of_life", "participating_firm", "country", "cms", "function", "app_service",
+    "business_service", "department", "service_line", "data_classification", "data_qualification",
 ]
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low"]
@@ -94,6 +95,8 @@ SEVERITY_ALIASES = {
     "low": "Low", "minor": "Low",
     "info": "Informational", "informational": "Informational", "negligible": "Informational",
 }
+SEVERITY_RANKS = {name: rank for rank, name in enumerate(SEVERITY_ORDER)}
+OTHER_SEVERITY_RANK = len(SEVERITY_ORDER)
 PROVIDER_ALIASES = {
     "aws": "AWS", "amazon": "AWS", "amazonwebservices": "AWS",
     "azure": "Azure", "microsoftazure": "Azure", "msazure": "Azure",

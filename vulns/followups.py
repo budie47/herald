@@ -140,3 +140,21 @@ def close(follow_up, user, remark=""):
 def close_for_deleted_app(app, user):
     for follow_up in FollowUp.objects.select_for_update().filter(application=app).exclude(status=FollowUp.CLOSED):
         _close(follow_up, user, "Application deleted.")
+
+
+def notify_many(payload, user):
+    """Bulk send from the Applications page, run by the worker. Every attempt is in the Notification log."""
+    remark, include = payload.get("remark", ""), payload.get("include", False)
+    apps = {a.app_id: a for a in Application.objects.filter(app_id__in=payload.get("app_ids", []))}
+    sent, failed, skipped = 0, 0, 0
+    for app_id in payload.get("app_ids", []):
+        try:
+            log = notify_support(apps.get(app_id), user, remark, include)
+        except NotificationNotAllowed:
+            skipped += 1
+            continue
+        if log.status == Notification.SENT:
+            sent += 1
+        else:
+            failed += 1
+    return f"Sent {sent}, failed {failed}, skipped {skipped}."

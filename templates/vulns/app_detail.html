@@ -12,7 +12,7 @@
       <span {% if not app.has_email %}title="Add a support email first"{% elif not summary.open %}title="No open vulnerabilities"{% endif %}>
         <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#send-modal" {% if not app.has_email or not summary.open %}disabled{% endif %}><i class="bi bi-envelope"></i> {% if follow_up %}Send reminder{% else %}Send to support{% endif %}</button>
       </span>
-      <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> Edit</a>
+      <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> {% if app.has_contacts %}Edit{% else %}Add contacts{% endif %}</a>
       <a class="btn btn-outline-danger btn-sm" href="{% url 'app_delete' app_id %}"><i class="bi bi-trash"></i> Delete</a>
     {% else %}
       <a class="btn btn-warning btn-sm" href="{% url 'app_create' %}?app_id={{ app_id|urlencode }}"><i class="bi bi-person-plus"></i> Register owner</a>

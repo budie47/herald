@@ -1,6 +1,6 @@
 {% load herald_tags %}
   <form method="get" class="row g-2 align-items-end mb-2">
-    <div class="col-md-3"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="CVE, package, version, image, asset, account, alert ID, cluster, namespace, RITM"></div>
+    <div class="col-md-3"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="CVE, package, image, asset, account, alert ID, RITM"></div>
     <div class="col-6 col-md-2"><select name="status" class="form-select form-select-sm">{% for v, l in statuses %}<option value="{{ v }}" {% if params.status == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-1"><select name="severity" class="form-select form-select-sm"><option value="">Severity</option>{% for s in severities %}<option {% if params.severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-2"><select name="env" class="form-select form-select-sm"><option value="">All environments</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
@@ -9,6 +9,7 @@
     <input type="hidden" name="per_page" value="{{ per_page }}">
     <div class="col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{{ reset_url }}">Reset</a></div>
   </form>
+  {% if search_timed_out %}<div class="alert alert-warning py-2 small">This search is too broad for this application. Try a full CVE, an exact Alert ID, or add a severity or environment filter.</div>{% endif %}
   <div class="table-responsive">
   <table class="table table-sm table-hover align-middle mb-0 small">
     <thead><tr>
@@ -39,4 +40,4 @@
     </tbody>
   </table>
   </div>
-  {% include "_pagination.html" %}
+  {% include "_keyset_pagination.html" %}

@@ -9,7 +9,7 @@
 
 {% if unregistered_count and user.can_view_all and params.status != "unregistered" %}
 <div class="alert alert-warning py-2 small">
-  <i class="bi bi-person-exclamation"></i> {{ unregistered_count }} App ID{{ unregistered_count|pluralize }} in the scan data {{ unregistered_count|pluralize:"is,are" }} not registered.
+  <i class="bi bi-person-exclamation"></i> {{ unregistered_count }} App ID{{ unregistered_count|pluralize }} {{ unregistered_count|pluralize:"has,have" }} no owner or support contact yet.
   <a href="?status=unregistered">Show them</a>
 </div>
 {% endif %}
@@ -59,11 +59,11 @@
     <tbody>
     {% for row in page %}
       <tr>
-        {% if user.is_admin %}<td>{% if row.registered and row.has_email %}<input type="checkbox" class="form-check-input row-check" name="app_ids" value="{{ row.app_id }}">{% endif %}</td>{% endif %}
+        {% if user.is_admin %}<td>{% if row.has_email %}<input type="checkbox" class="form-check-input row-check" name="app_ids" value="{{ row.app_id }}">{% endif %}</td>{% endif %}
         <td class="nowrap"><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
-        {% if row.registered %}
-          <td>{{ row.app.name|default:"—" }}</td>
-          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no support email</span>{% endif %}</div></td>
+        {% if row.in_catalog %}
+          <td>{{ row.app.name|default:"—" }}{% if row.app.scan_conflict %} <span class="badge text-bg-light border" title="The scan data has more than one name for this App ID">name differs</span>{% endif %}</td>
+          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no support email</span>{% if user.is_admin %} <a class="small" href="{% url 'app_edit' row.app_id %}">Add contacts</a>{% endif %}{% endif %}</div></td>
           <td class="small">{{ row.app.business_service|default:"" }}{% if row.app.department %}<div class="text-muted">{{ row.app.department }}</div>{% endif %}</td>
         {% else %}
           <td colspan="3"><span class="badge text-bg-warning">unregistered</span>
@@ -77,7 +77,7 @@
         <td class="nowrap">{% if row.followup %}<span class="badge {{ row.followup.status|followup_class }}">{{ row.followup.get_status_display }}</span>{% if row.followup_overdue %} <span class="badge text-bg-warning">Overdue</span>{% endif %}{% else %}<span class="text-muted small">—</span>{% endif %}</td>
         <td class="small nowrap">{{ row.last_notified|date:"Y-m-d H:i"|default:"never" }}</td>
         <td class="text-end nowrap">
-          {% if user.is_admin and row.registered %}
+          {% if user.is_admin and row.in_catalog %}
             <button class="btn btn-sm btn-outline-secondary py-0" formaction="{% url 'app_notify' row.app_id %}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No support email{% elif not row.open %}No open vulnerabilities{% elif row.followup %}Send reminder{% else %}Send to support{% endif %}" onclick="return confirm('{% if row.followup %}Send a reminder{% else %}Send to support{% endif %} for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
           {% endif %}
         </td>

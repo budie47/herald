@@ -41,8 +41,8 @@
     {% for sev, n in severity_bars %}
     <div class="row align-items-center g-2 mb-1">
       <div class="col-4 small">{{ sev|default:"(not set)" }}</div>
-      <div class="col-6"><div class="bar-track"><div class="bar-fill bar-{{ sev|sev_class|cut:"sev-" }}" style="width: {% widthratio n severity_max 100 %}%"></div></div></div>
-      <div class="col-2 text-end small">{{ n|intcomma }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-{{ sev|sev_class|cut:"sev-" }}" style="width: {% widthratio n severity_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
     </div>
     {% endfor %}
   </div></div></div>
@@ -51,23 +51,23 @@
     {% for env, n in env_bars %}
     <div class="row align-items-center g-2 mb-1">
       <div class="col-4 small text-truncate" title="{{ env }}">{{ env }}</div>
-      <div class="col-6"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n env_max 100 %}%"></div></div></div>
-      <div class="col-2 text-end small">{{ n|intcomma }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n env_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
     </div>
     {% empty %}<p class="small text-muted mb-0">No open vulnerabilities.</p>{% endfor %}
     <h2 class="h6 mt-3">By cloud provider <span class="text-muted fw-normal small">· {{ cloud_accounts }} account{{ cloud_accounts|pluralize }}</span></h2>
     {% for provider, n in provider_bars %}
     <div class="row align-items-center g-2 mb-1">
       <div class="col-4 small text-truncate" title="{{ provider }}">{{ provider }}</div>
-      <div class="col-6"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n provider_max 100 %}%"></div></div></div>
-      <div class="col-2 text-end small">{{ n|intcomma }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n provider_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
     </div>
     {% endfor %}
   </div></div></div>
   <div class="col-lg-4"><div class="card h-100"><div class="card-body">
     <h2 class="h6">Coverage</h2>
     {% if unassigned_alerts and user.can_assign_accounts %}
-    <a class="alert alert-warning d-block text-decoration-none py-2 small" href="{% url 'account_list' %}"><i class="bi bi-cloud-slash"></i> <strong>{{ unassigned_alerts }} unassigned alert{{ unassigned_alerts|pluralize }}</strong> in {{ unassigned_accounts }} cloud account{{ unassigned_accounts|pluralize }} ({{ unassigned_critical_high }} Critical/High). Assign to an App ID.</a>
+    <a class="alert alert-warning d-block text-decoration-none py-2 small" href="{% url 'account_list' %}"><i class="bi bi-cloud-slash"></i> <strong>{{ unassigned_alerts|intcomma }} unassigned alert{{ unassigned_alerts|pluralize }}</strong> in {{ unassigned_accounts|intcomma }} cloud account{{ unassigned_accounts|pluralize }} ({{ unassigned_critical_high|intcomma }} Critical/High). Assign to an App ID.</a>
     {% endif %}
     <p class="mb-1">{{ owned_apps }} of {{ finding_apps }} App IDs with findings have an owner registered.</p>
     {% with p=owned_apps|pct:finding_apps %}
@@ -76,9 +76,16 @@
     {% if unowned_apps and user.can_view_all %}
     <a class="btn btn-sm btn-outline-warning" href="{% url 'app_list' %}?status=unregistered"><i class="bi bi-person-plus"></i> Register {{ unowned_apps }} unowned App ID{{ unowned_apps|pluralize }}</a>
     {% endif %}
+    {% if missing_support_total %}
+    <div class="alert alert-warning py-2 small mt-2 mb-0">
+      <strong>{{ missing_support_total|intcomma }} application{{ missing_support_total|pluralize }} with open alerts {{ missing_support_total|pluralize:"has,have" }} no support email</strong>, so {{ missing_support_total|pluralize:"it,they" }} can't be notified yet.
+      <div class="mt-1">{% for app_id, n in missing_support %}<a href="{% url 'app_detail' app_id %}" class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</a>{% endfor %}</div>
+      <a href="{% url 'app_list' %}?status=no_email">See all</a>
+    </div>
+    {% endif %}
     <hr>
-    {% if not_seen %}<div class="small text-warning mb-1"><i class="bi bi-eye-slash"></i> <a class="link-warning" href="{% url 'app_list' %}?status=not_rescanned">{{ not_seen }} open vulnerabilit{{ not_seen|pluralize:"y,ies" }} not rescanned in {{ not_seen_days }}+ days</a></div>{% else %}<div class="small text-muted mb-1">No not-seen vulnerabilities.</div>{% endif %}
-    <div class="small mb-1">Open vulnerabilities flagged with an exception: {{ exceptions }}</div>
+    {% if not_seen %}<div class="small text-warning mb-1"><i class="bi bi-eye-slash"></i> <a class="link-warning" href="{% url 'app_list' %}?status=not_rescanned">{{ not_seen|intcomma }} open vulnerabilit{{ not_seen|pluralize:"y,ies" }} not rescanned in {{ not_seen_days }}+ days</a></div>{% else %}<div class="small text-muted mb-1">No not-seen vulnerabilities.</div>{% endif %}
+    <div class="small mb-1">Open vulnerabilities flagged with an exception: {{ exceptions|intcomma }}</div>
     <div class="small mb-1">Notifications sent: {{ notifications_sent }}</div>
     <div class="small">Remediated in last 30 days:
       {% for sev, n in recent_by_sev %}<span class="sev {{ sev|sev_class }}">{{ n }} {{ sev }}</span> {% empty %}none{% endfor %}

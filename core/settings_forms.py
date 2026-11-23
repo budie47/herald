@@ -7,7 +7,9 @@ from .models import AppSettings, EmailSettings
 class AppSettingsForm(BootstrapMixin, forms.ModelForm):
     class Meta:
         model = AppSettings
-        fields = ["not_seen_days", "followup_overdue_days", "slo_critical_days", "slo_high_days", "slo_medium_days", "slo_low_days"]
+        fields = [
+            "not_seen_days", "followup_overdue_days", "retention_days", "retention_enabled", "slo_critical_days", "slo_high_days", "slo_medium_days", "slo_low_days",
+        ]
 
 
 class EmailSettingsForm(BootstrapMixin, forms.ModelForm):
@@ -20,7 +22,7 @@ class EmailSettingsForm(BootstrapMixin, forms.ModelForm):
 
     class Meta:
         model = EmailSettings
-        fields = ["host", "port", "security", "username", "sender"]
+        fields = ["host", "port", "security", "username", "sender", "max_attachment_mb"]
 
     def save(self, commit=True):
         cfg = super().save(commit=False)

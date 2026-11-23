@@ -1,32 +1,39 @@
 {% extends "base.html" %}
+{% load humanize %}
 {% block title %}Confirm assignment{% endblock %}
 {% block content %}
 <h1 class="h3 mb-3">{% if application %}Assign to {{ application.app_id }}{% else %}Remove assignment{% endif %}?</h1>
 <div class="card" style="max-width: 860px"><div class="card-body">
   <p>
-    {% if application %}{{ accounts|length }} cloud account{{ accounts|length|pluralize }} and <strong>{{ untagged_total }} open untagged alert{{ untagged_total|pluralize }}</strong> will go to <strong>{{ application.app_id }}{% if application.name %} · {{ application.name }}{% endif %}</strong>. Future untagged alerts in {{ accounts|length|pluralize:"this account,these accounts" }} will follow it.
-    {% else %}{{ accounts|length }} cloud account{{ accounts|length|pluralize }} and {{ untagged_total }} open untagged alert{{ untagged_total|pluralize }} will return to Unassigned.{% endif %}
+    {% if application %}{{ account_total|intcomma }} cloud account{{ account_total|pluralize }} and <strong>{{ untagged_total|intcomma }} open untagged alert{{ untagged_total|pluralize }}</strong> will go to <strong>{{ application.app_id }}{% if application.name %} · {{ application.name }}{% endif %}</strong>. Future untagged alerts in {{ account_total|pluralize:"this account,these accounts" }} will follow it.
+    {% else %}{{ account_total|intcomma }} cloud account{{ account_total|pluralize }} and {{ untagged_total|intcomma }} open untagged alert{{ untagged_total|pluralize }} will return to Unassigned.{% endif %}
     Alerts that already have their own App ID won't change.
   </p>
-  {% if mixed %}
+  {% if application and not application.has_email %}
+  <div class="alert alert-warning small"><i class="bi bi-envelope-exclamation"></i> {{ application.app_id }} has no support email. The alerts can be assigned and counted, but they can't be emailed until someone adds a contact.</div>
+  {% endif %}
+  {% if mixed_total %}
   <div class="alert alert-warning small">
-    <strong><i class="bi bi-exclamation-triangle"></i> Shared account{{ mixed|length|pluralize }}:</strong> these already contain other App IDs, so all of their untagged alerts will go to the one App ID you chose.
-    <ul class="mb-0 mt-1">{% for a in mixed %}<li>{{ a.account_name }}: {{ a.app_ids|join:", " }}</li>{% endfor %}</ul>
+    <strong><i class="bi bi-exclamation-triangle"></i> Shared account{{ mixed_total|pluralize }}:</strong> {{ mixed_total|intcomma }} already contain{{ mixed_total|pluralize:"s," }} other App IDs, so all of their untagged alerts will go to the one App ID you chose.
+    <ul class="mb-0 mt-1">{% for a in mixed|slice:":10" %}<li>{{ a.account_name }}: {{ a.app_ids|slice:":5"|join:", " }}{% if a.seen_app_count > 5 %} and more{% endif %}</li>{% endfor %}</ul>
+    {% if mixed_total > 10 %}<div class="mt-1">and {{ mixed_total|add:"-10"|intcomma }} more.</div>{% endif %}
   </div>
   {% endif %}
-  {% if replacing %}
-  <div class="alert alert-info small">Replacing an existing assignment: {% for a in replacing %}{{ a.account_name }} ({{ a.application.app_id }}){% if not forloop.last %}, {% endif %}{% endfor %}.</div>
+  {% if replacing_total %}
+  <div class="alert alert-info small">Replacing {{ replacing_total|intcomma }} existing assignment{{ replacing_total|pluralize }}: {% for a in replacing|slice:":5" %}{{ a.account_name }} ({{ a.application.app_id }}){% if not forloop.last %}, {% endif %}{% endfor %}{% if replacing_total > 5 %} and more{% endif %}.</div>
   {% endif %}
   <div class="table-responsive mb-3">
   <table class="table table-sm small mb-0">
     <thead><tr><th>Provider</th><th>Account name</th><th>Account ID</th><th class="text-end">Untagged open</th><th class="text-end">Critical + High</th></tr></thead>
-    <tbody>{% for a in accounts %}<tr><td>{{ a.provider|default:"—" }}</td><td>{{ a.account_name }}</td><td class="font-monospace">{{ a.account_id }}</td><td class="text-end">{{ a.untagged_open }}</td><td class="text-end">{{ a.untagged_critical_high }}</td></tr>{% endfor %}</tbody>
+    <tbody>{% for a in accounts %}<tr><td>{{ a.provider|default:"—" }}</td><td>{{ a.account_name }}</td><td class="font-monospace">{{ a.account_id }}</td><td class="text-end">{{ a.untagged_open|intcomma }}</td><td class="text-end">{{ a.untagged_critical_high|intcomma }}</td></tr>{% endfor %}</tbody>
   </table>
+  {% if hidden_accounts %}<div class="small text-muted mt-1">and {{ hidden_accounts|intcomma }} more account{{ hidden_accounts|pluralize }}.</div>{% endif %}
   </div>
   <form method="post" action="{% url 'account_assign' %}" class="d-flex gap-2">{% csrf_token %}
-    {% for a in accounts %}<input type="hidden" name="account_ids" value="{{ a.pk }}">{% endfor %}
+    {% if select_all %}<input type="hidden" name="select_all" value="1">{% for key, value in selection.items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+    {% else %}{% for pk in account_pks %}<input type="hidden" name="account_ids" value="{{ pk }}">{% endfor %}{% endif %}
     <input type="hidden" name="application" value="{{ choice }}"><input type="hidden" name="confirm" value="1"><input type="hidden" name="next" value="{{ next }}">
-    <button class="btn btn-primary">{% if application %}Assign {{ accounts|length }} account{{ accounts|length|pluralize }}{% else %}Remove assignment{% endif %}</button>
+    <button class="btn btn-primary">{% if application %}Assign {{ account_total|intcomma }} account{{ account_total|pluralize }}{% else %}Remove assignment{% endif %}</button>
     <a class="btn btn-outline-secondary" href="{{ next|default:'/cloud-accounts/' }}">Cancel</a>
   </form>
 </div></div>

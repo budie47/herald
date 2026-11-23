@@ -4,13 +4,14 @@ import tempfile
 from datetime import timedelta
 from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from openpyxl import Workbook
 
-from vulns import assignment, lifecycle
+from vulns import assignment, lifecycle, summaries
 from vulns.columns import COLUMNS
 from vulns.models import Application, CloudAccount, ImportRun, Vulnerability
 
@@ -160,10 +161,14 @@ class Command(BaseCommand):
                 owner_name=owner, owner_email=email,
                 business_service=service, department=department, notes="Sample data",
             )
+        settings.HERALD_JOBS_EAGER = True  # this command does the work itself
         for path in paths:
             run = lifecycle.get_or_create_draft(user)
             lifecycle.add_file(run, SimpleUploadedFile(path.name, path.read_bytes()), user)
-            run = lifecycle.finalize(run, user)
+            run.refresh_from_db()
+            ImportRun.objects.filter(pk=run.pk).update(expected_total=run.unique_rows)
+            run = lifecycle.finalize(run, user, confirm_text=lifecycle.CONFIRM_WORD)
+            summaries.refresh()
             self.stdout.write(
                 f"Import #{run.pk}: {run.new_count} new, {run.updated_count} updated, {run.reopened_count} reopened, "
                 f"{run.remediated_count} remediated"

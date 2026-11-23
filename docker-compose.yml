@@ -2,6 +2,28 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_CACHE_SIZE:-768MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_MEM:-128MB}
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - jit=off
+    mem_limit: ${DB_MEMORY:-1g}
+    shm_size: 256m
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-herald}
       POSTGRES_USER: ${POSTGRES_USER:-herald}
@@ -14,13 +36,17 @@ services:
       timeout: 3s
       retries: 20
 
-  web:
+  web: &app
     build: .
     restart: unless-stopped
+    mem_limit: ${WEB_MEMORY:-384m}
     depends_on:
       db:
         condition: service_healthy
-    environment:
+    volumes:
+      - uploads:/data/uploads
+    environment: &app-env
+      HERALD_UPLOAD_DIR: /data/uploads
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-change-me-in-production}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
@@ -41,6 +67,16 @@ services:
     ports:
       - "${HERALD_PORT:-8000}:8000"
 
+  # Reads uploads, applies imports and refreshes dashboard numbers in the background.
+  worker:
+    <<: *app
+    mem_limit: ${WORKER_MEMORY:-384m}
+    command: ["python", "manage.py", "run_worker"]
+    ports: []
+    environment:
+      <<: *app-env
+      HERALD_RUN_MIGRATIONS: "0"
+
   # Development mail catcher: every email Herald sends shows up at http://localhost:8025
   mailpit:
     image: axllent/mailpit:v1.21
@@ -50,3 +86,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

@@ -26,6 +26,15 @@ class AppSettings(SingletonModel):
         "Follow-up overdue after (days)", default=5, validators=[MinValueValidator(1)],
         help_text="Calendar days without a response before a support or owner follow-up is flagged Overdue.",
     )
+    retention_days = models.PositiveIntegerField(
+        "Keep full remediated details (days)", default=90, validators=[MinValueValidator(1)],
+        help_text="After this, a remediated alert keeps a compact record and its scan details are removed.",
+    )
+    retention_enabled = models.BooleanField(
+        "Archive automatically every night", default=False,
+        help_text="Leave off to run the archive manually from this page.",
+    )
+    summaries_refreshed_at = models.DateTimeField(null=True, blank=True, editable=False)
     slo_critical_days = models.PositiveIntegerField(default=15, verbose_name="SLO days: Critical")
     slo_high_days = models.PositiveIntegerField(default=30, verbose_name="SLO days: High")
     slo_medium_days = models.PositiveIntegerField(default=90, verbose_name="SLO days: Medium")
@@ -53,6 +62,10 @@ class EmailSettings(SingletonModel):
     username = models.CharField(max_length=255, blank=True)
     password_encrypted = models.TextField(blank=True)
     sender = models.CharField(max_length=255, blank=True, help_text='e.g. "Herald <herald@example.com>"')
+    max_attachment_mb = models.PositiveIntegerField(
+        "Largest email attachment (MB)", default=10, validators=[MinValueValidator(1)],
+        help_text="Larger CSVs are zipped. If still too large, the email links to a signed-in download instead.",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     @property

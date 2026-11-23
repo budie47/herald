@@ -1,0 +1,9 @@
+<div class="app-picker" data-search-url="{% url 'account_app_search' %}" {% if account_pk %}data-accounts="{{ account_pk }}"{% endif %} {% if allow_clear %}data-allow-clear="1"{% endif %}>
+  <input type="hidden" name="application" class="picker-value" value="">
+  <div class="input-group input-group-sm">
+    <span class="input-group-text"><i class="bi bi-search"></i></span>
+    <input type="text" class="form-control picker-input" role="combobox" aria-label="Search App ID" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="{{ placeholder|default:'Search App ID, name, service, owner…' }}">
+    <button type="button" class="btn btn-outline-secondary picker-clear" aria-label="Clear App ID" hidden><i class="bi bi-x-lg"></i></button>
+  </div>
+  <div class="picker-list" role="listbox" hidden></div>
+</div>
