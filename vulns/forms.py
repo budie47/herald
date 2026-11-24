@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from core.forms import BootstrapMixin
 
-from .models import Application, split_emails
+from .models import Application, split_emails, unique_emails
 
 
 class ApplicationForm(BootstrapMixin, forms.ModelForm):
@@ -14,26 +14,44 @@ class ApplicationForm(BootstrapMixin, forms.ModelForm):
             "app_id", "name", "support_team", "support_emails", "owner_name", "owner_email", "extra_emails",
             "business_service", "department", "notes",
         ]
+        labels = {
+            "support_team": "Team name", "support_emails": "Team email", "owner_name": "Owner name",
+            "owner_email": "Owner email", "extra_emails": "Additional emails",
+        }
+        help_texts = {
+            "support_emails": "Needed before Herald can send a notification.",
+            "owner_email": "",
+            "extra_emails": "",
+        }
         widgets = {
-            "support_emails": forms.Textarea(attrs={"rows": 2}),
-            "extra_emails": forms.Textarea(attrs={"rows": 2}),
+            "support_emails": forms.Textarea(attrs={"rows": 2, "data-email-chips": "1", "placeholder": "team@company.com"}),
+            "owner_email": forms.EmailInput(attrs={"placeholder": "owner@company.com"}),
+            "extra_emails": forms.Textarea(attrs={"rows": 2, "data-email-chips": "1", "placeholder": "name@company.com"}),
             "notes": forms.Textarea(attrs={"rows": 3}),
         }
 
     def clean_app_id(self):
-        return self.cleaned_data["app_id"].strip()
+        if self.instance.pk:
+            return self.instance.app_id  # locked: alerts and history refer to it
+        app_id = self.cleaned_data["app_id"].strip().upper()  # scan data stores App IDs in uppercase
+        if "/" in app_id:
+            raise forms.ValidationError("App ID can't contain '/'.")
+        existing = Application.objects.filter(app_id__iexact=app_id).first()
+        if existing:
+            raise forms.ValidationError(f"Already registered as {existing.app_id}.")
+        return app_id
 
     def _clean_email_list(self, field):
-        value = self.cleaned_data[field]
+        emails = unique_emails(split_emails(self.cleaned_data[field]))
         bad = []
-        for email in split_emails(value):
+        for email in emails:
             try:
                 validate_email(email)
             except forms.ValidationError:
                 bad.append(email)
         if bad:
             raise forms.ValidationError(f"Not valid email address(es): {', '.join(bad)}")
-        return value
+        return ", ".join(emails)
 
     def clean_support_emails(self):
         return self._clean_email_list("support_emails")
@@ -56,4 +74,8 @@ class ResponseForm(BootstrapMixin, forms.Form):
 
 
 class UploadForm(forms.Form):
+    file = forms.FileField(widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".csv,.xlsx,.xlsm"}))
+
+
+class ContactUploadForm(forms.Form):
     file = forms.FileField(widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".csv,.xlsx,.xlsm"}))

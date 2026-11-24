@@ -78,7 +78,7 @@
     {% endif %}
     {% if missing_support_total %}
     <div class="alert alert-warning py-2 small mt-2 mb-0">
-      <strong>{{ missing_support_total|intcomma }} application{{ missing_support_total|pluralize }} with open alerts {{ missing_support_total|pluralize:"has,have" }} no support email</strong>, so {{ missing_support_total|pluralize:"it,they" }} can't be notified yet.
+      <strong>{{ missing_support_total|intcomma }} application{{ missing_support_total|pluralize }} with open alerts {{ missing_support_total|pluralize:"has,have" }} no team email</strong>, so {{ missing_support_total|pluralize:"it,they" }} can't be notified yet.
       <div class="mt-1">{% for app_id, n in missing_support %}<a href="{% url 'app_detail' app_id %}" class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</a>{% endfor %}</div>
       <a href="{% url 'app_list' %}?status=no_email">See all</a>
     </div>

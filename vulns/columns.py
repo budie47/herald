@@ -101,3 +101,14 @@ PROVIDER_ALIASES = {
     "aws": "AWS", "amazon": "AWS", "amazonwebservices": "AWS",
     "azure": "Azure", "microsoftazure": "Azure", "msazure": "Azure",
 }
+
+# Application contacts template: (column header, Application field).
+CONTACT_COLUMNS = [
+    ("APP ID", "app_id"), ("Name", "name"), ("Team Name", "support_team"), ("Team Email", "support_emails"),
+    ("Owner Name", "owner_name"), ("Owner Email", "owner_email"), ("Additional Emails List", "extra_emails"),
+    ("Business Service", "business_service"), ("Department", "department"), ("Notes", "notes"),
+]
+CONTACT_FIELDS = [key for _, key in CONTACT_COLUMNS]
+CONTACT_LABELS = {key: label for label, key in CONTACT_COLUMNS}
+CONTACT_HEADER_MAP = {normalize_header(label): key for label, key in CONTACT_COLUMNS}
+CONTACT_HEADER_MAP["additionalemails"] = "extra_emails"

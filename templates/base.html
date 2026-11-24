@@ -33,6 +33,15 @@
     .picker-option { padding: .4rem .75rem; font-size: .875rem; cursor: pointer; border-top: 1px solid #f1f3f5; }
     .picker-option:hover, .picker-option.active { background: #e7f1ff; }
     .settings-nav .list-group-item.active { background: #212529; border-color: #212529; }
+    .email-chips { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; min-height: calc(1.5em + .75rem + 2px); height: auto; cursor: text; }
+    .email-chips:focus-within { border-color: #86b7fe; box-shadow: 0 0 0 .25rem rgba(13,110,253,.25); }
+    .email-chips input { flex: 1 1 5rem; min-width: 5rem; border: 0; outline: 0; background: transparent; padding: 0; }
+    .email-chip { display: inline-flex; align-items: center; gap: .25rem; max-width: 100%; padding: .05rem .25rem .05rem .5rem; border-radius: .25rem; background: #e7f1ff; color: #084298; font-size: .85rem; overflow-wrap: anywhere; }
+    .email-chip.invalid { background: #f8d7da; color: #842029; }
+    .email-chip button { border: 0; background: transparent; color: inherit; padding: 0 .15rem; line-height: 1; }
+    .contact-group + .contact-group { border-top: 1px solid #e9ecef; margin-top: 1rem; padding-top: 1rem; }
+    .contact-step { display: inline-flex; align-items: center; justify-content: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: #212529; color: #fff; font-size: .75rem; font-weight: 600; }
+    @media (min-width: 992px) { .app-form-side { position: sticky; top: 1rem; } }
   </style>
 </head>
 <body>

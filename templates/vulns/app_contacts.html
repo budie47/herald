@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}Import contacts{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'app_list' %}">&larr; Applications</a>
+<h1 class="h3 mb-1">Import application contacts</h1>
+<p class="small text-muted">{{ app_count|intcomma }} registered application{{ app_count|pluralize }}. {{ missing_count|intcomma }} App ID{{ missing_count|pluralize }} still need{{ missing_count|pluralize:"s," }} a team email.</p>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6"><span class="contact-step">1</span> Download a file</h2>
+    <p class="small text-muted">Start with the App IDs that can't be notified yet.</p>
+    <div class="d-flex justify-content-between align-items-center border-top py-2 gap-2">
+      <div class="small"><strong>Missing team email</strong><div class="text-muted">{{ missing_count|intcomma }} App ID{{ missing_count|pluralize }}</div></div>
+      <div class="btn-group btn-group-sm"><a class="btn btn-primary" href="{% url 'app_contacts_template' 'xlsx' %}?scope=missing">Excel</a><a class="btn btn-outline-primary" href="{% url 'app_contacts_template' 'csv' %}?scope=missing">CSV</a></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center border-top py-2 gap-2">
+      <div class="small"><strong>All contacts</strong><div class="text-muted">Pre-filled for editing</div></div>
+      <div class="btn-group btn-group-sm"><a class="btn btn-outline-secondary" href="{% url 'app_contacts_template' 'xlsx' %}?scope=all">Excel</a><a class="btn btn-outline-secondary" href="{% url 'app_contacts_template' 'csv' %}?scope=all">CSV</a></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center border-top pt-2 gap-2">
+      <div class="small"><strong>Blank template</strong><div class="text-muted">Headers only</div></div>
+      <div class="btn-group btn-group-sm"><a class="btn btn-outline-secondary" href="{% url 'app_contacts_template' 'xlsx' %}?scope=blank">Excel</a><a class="btn btn-outline-secondary" href="{% url 'app_contacts_template' 'csv' %}?scope=blank">CSV</a></div>
+    </div>
+  </div></div></div>
+
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6"><span class="contact-step">2</span> Upload it</h2>
+    <p class="small text-muted">You'll see every change before anything is saved.</p>
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      <label class="form-label small fw-semibold" for="{{ form.file.id_for_label }}">CSV or Excel file</label>
+      {{ form.file }}
+      <div class="form-text mb-3">Up to 10 MB and {{ max_rows|intcomma }} rows.</div>
+      <button class="btn btn-primary btn-sm"><i class="bi bi-upload"></i> Upload and preview</button>
+    </form>
+  </div></div></div>
+
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">How cells are read</h2>
+    <ul class="small mb-0 ps-3">
+      <li><strong>Blank</strong> keeps the current value.</li>
+      <li><strong>CLEAR</strong> removes the current value.</li>
+      <li><strong>Several emails</strong> can be separated with <code>;</code> or commas in Team Email and Additional Emails List.</li>
+      <li><strong>Owner Email</strong> takes one address.</li>
+      <li><strong>New App IDs</strong> are created and marked if no scan has seen them.</li>
+      <li><strong>Different values for one App ID</strong> reject those rows.</li>
+    </ul>
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">Contact imports</h2>
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0">
+    <thead><tr><th>File</th><th>Status</th><th class="text-end">New</th><th class="text-end">Updated</th><th class="text-end">Unchanged</th><th class="text-end">Rejected</th><th>Uploaded</th><th>Applied</th></tr></thead>
+    <tbody>
+    {% for item in page %}
+      <tr>
+        <td><a href="{% url 'app_contacts_detail' item.pk %}">{{ item.filename }}</a></td>
+        <td>{% if item.is_preview %}<span class="badge text-bg-warning">Preview</span>{% else %}<span class="badge text-bg-success">Applied</span>{% endif %}</td>
+        <td class="text-end">{{ item.new_count|intcomma }}</td><td class="text-end">{{ item.updated_count|intcomma }}</td>
+        <td class="text-end">{{ item.unchanged_count|intcomma }}</td><td class="text-end">{{ item.rejected_count|intcomma }}</td>
+        <td class="small nowrap">{{ item.created_at|date:"Y-m-d H:i" }}<div class="text-muted">{{ item.created_by.email|default:"" }}</div></td>
+        <td class="small nowrap">{% if item.applied_at %}{{ item.applied_at|date:"Y-m-d H:i" }}<div class="text-muted">{{ item.applied_by.email|default:"" }}</div>{% else %}—{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="8" class="text-muted small">No contact files uploaded yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

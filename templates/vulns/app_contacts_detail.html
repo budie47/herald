@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% load humanize herald_tags %}
+{% block title %}Contact import{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'app_contacts' %}">&larr; Import contacts</a>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0 text-break">{{ contact_import.filename }}</h1>
+    <div class="small text-muted">{% if contact_import.is_preview %}Preview. No contacts have been changed yet.{% else %}Applied {{ contact_import.applied_at|date:"Y-m-d H:i" }}{% if contact_import.applied_by %} by {{ contact_import.applied_by.email }}{% endif %}.{% endif %}</div>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    {% if contact_import.rejected_count %}<a class="btn btn-outline-secondary btn-sm" href="{% url 'app_contacts_rejected' contact_import.pk %}"><i class="bi bi-download"></i> Rejected rows</a>{% endif %}
+    {% if contact_import.is_preview %}
+    <form method="post" action="{% url 'app_contacts_discard' contact_import.pk %}">{% csrf_token %}<button class="btn btn-outline-secondary btn-sm">Discard</button></form>
+    {% if contact_import.change_count %}
+    <form method="post" action="{% url 'app_contacts_apply' contact_import.pk %}">{% csrf_token %}
+      <button class="btn btn-primary btn-sm" onclick="return confirm('Save {{ contact_import.change_count }} contact change{{ contact_import.change_count|pluralize }}?')"><i class="bi bi-check-lg"></i> Apply {{ contact_import.change_count|intcomma }} change{{ contact_import.change_count|pluralize }}</button>
+    </form>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ contact_import.new_count|intcomma }}</div><div class="small text-muted">new</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ contact_import.updated_count|intcomma }}</div><div class="small text-muted">updated</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ contact_import.unchanged_count|intcomma }}</div><div class="small text-muted">unchanged</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat {% if contact_import.rejected_count %}text-danger{% endif %}">{{ contact_import.rejected_count|intcomma }}</div><div class="small text-muted">rejected</div></div></div></div>
+</div>
+
+{% if contact_import.is_preview %}
+  {% if contact_import.team_email_removed_count %}<div class="alert alert-danger py-2 small"><i class="bi bi-exclamation-triangle"></i> <strong>{{ contact_import.team_email_removed_count|intcomma }} application{{ contact_import.team_email_removed_count|pluralize }} will lose {{ contact_import.team_email_removed_count|pluralize:"its,their" }} team email</strong> and can't be notified until a new one is added.</div>{% endif %}
+  {% if contact_import.not_in_scans_count %}<div class="alert alert-warning py-2 small"><i class="bi bi-question-circle"></i> <strong>{{ contact_import.not_in_scans_count|intcomma }} new App ID{{ contact_import.not_in_scans_count|pluralize }} {{ contact_import.not_in_scans_count|pluralize:"hasn't,haven't" }} been seen in scans.</strong> Check for typos before applying.</div>{% endif %}
+{% endif %}
+{% if contact_import.rejected_count %}<div class="alert alert-light border py-2 small">{{ contact_import.rejected_count|intcomma }} rejected row{{ contact_import.rejected_count|pluralize }} {{ contact_import.rejected_count|pluralize:"is,are" }} not saved. Download {{ contact_import.rejected_count|pluralize:"it,them" }}, fix the cells and upload that file again.</div>{% endif %}
+{% if contact_import.duplicate_count %}<div class="small text-muted mb-2">{{ contact_import.duplicate_count|intcomma }} exact duplicate row{{ contact_import.duplicate_count|pluralize }} counted once.</div>{% endif %}
+
+<div class="card"><div class="card-body">
+  <ul class="nav nav-pills nav-fill flex-column flex-md-row small mb-3">
+    {% for key, label, count in tabs %}
+    <li class="nav-item"><a class="nav-link py-1 {% if key == tab %}active{% endif %}" href="?show={{ key }}">{{ label }} ({{ count|intcomma }})</a></li>
+    {% endfor %}
+  </ul>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>Row</th><th>App ID</th><th>Result</th><th>{% if tab == "rejected" %}Reason{% else %}Details{% endif %}</th></tr></thead>
+    <tbody>
+    {% for row in page %}
+      <tr>
+        <td class="text-muted">{{ row.row_number }}</td>
+        <td class="nowrap">{% if row.app_id %}{{ row.app_id|truncatechars:40 }}{% else %}<span class="text-muted">Missing</span>{% endif %}{% if row.not_in_scans %} <span class="badge text-bg-warning">Not seen in scans</span>{% endif %}</td>
+        <td><span class="badge {% if row.action == 'rejected' %}text-bg-danger{% elif row.action == 'new' %}text-bg-primary{% elif row.action == 'updated' %}text-bg-info{% else %}text-bg-light border{% endif %}">{{ row.action|capfirst }}</span></td>
+        <td class="small">
+          {% if row.reason %}<span class="text-danger">{{ row.reason }}</span>{% endif %}
+          {% for label, old, new in row.change_list %}
+          <div class="text-break"><strong>{{ label }}:</strong> {% if old %}<span class="text-muted text-decoration-line-through">{{ old|truncatechars:120 }}</span> &rarr; {% endif %}{% if new %}{{ new|truncatechars:120 }}{% else %}<span class="text-danger">cleared</span>{% endif %}</div>
+          {% endfor %}
+          {% if row.action == "unchanged" %}<span class="text-muted">Matches the current contacts.</span>{% endif %}
+          {% if row.action == "new" and not row.change_list %}<span class="text-muted">App ID only.</span>{% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4" class="text-muted small">No rows here.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

@@ -9,7 +9,7 @@
   {% if user.is_admin %}
   <div class="d-flex gap-2">
     {% if app %}
-      <span {% if not app.has_email %}title="Add a support email first"{% elif not summary.open %}title="No open vulnerabilities"{% endif %}>
+      <span {% if not app.has_email %}title="Add a team email first"{% elif not summary.open %}title="No open vulnerabilities"{% endif %}>
         <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#send-modal" {% if not app.has_email or not summary.open %}disabled{% endif %}><i class="bi bi-envelope"></i> {% if follow_up %}Send reminder{% else %}Send to support{% endif %}</button>
       </span>
       <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> {% if app.has_contacts %}Edit{% else %}Add contacts{% endif %}</a>
@@ -26,11 +26,11 @@
     <h2 class="h6">Contacts</h2>
     {% if app %}
     <dl class="row small mb-0">
-      <dt class="col-5">Support team</dt><dd class="col-7">{{ app.support_team|default:"—" }}</dd>
-      <dt class="col-5">Support emails</dt><dd class="col-7">{% if app.has_email %}{{ app.support_email_list|join:", " }}{% else %}<span class="badge text-bg-warning">Not set</span>{% endif %}</dd>
-      <dt class="col-5">App owner</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
+      <dt class="col-5">Team name</dt><dd class="col-7">{{ app.support_team|default:"—" }}</dd>
+      <dt class="col-5">Team email</dt><dd class="col-7">{% if app.has_email %}{{ app.support_email_list|join:", " }}{% else %}<span class="badge text-bg-warning">Not set</span>{% endif %}</dd>
+      <dt class="col-5">Owner name</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
       <dt class="col-5">Owner email</dt><dd class="col-7">{{ app.owner_email|default:"—" }}</dd>
-      <dt class="col-5">Extra emails</dt><dd class="col-7">{{ app.extra_email_list|join:", "|default:"—" }}</dd>
+      <dt class="col-5">Additional emails</dt><dd class="col-7">{{ app.extra_email_list|join:", "|default:"—" }}</dd>
       <dt class="col-5">Business service</dt><dd class="col-7">{{ app.business_service|default:"—" }}</dd>
       <dt class="col-5">Department</dt><dd class="col-7">{{ app.department|default:"—" }}</dd>
       {% if app.notes %}<dt class="col-5">Notes</dt><dd class="col-7">{{ app.notes|linebreaksbr }}</dd>{% endif %}

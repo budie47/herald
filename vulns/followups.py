@@ -33,7 +33,7 @@ def notify_support(app, user, remark="", include=False):
     app = Application.objects.select_for_update().get(pk=app.pk)
     support = app.support_email_list()
     if not support:
-        raise NotificationNotAllowed(f"{app.app_id} has no support email. Add one to the application first.")
+        raise NotificationNotAllowed(f"{app.app_id} has no team email. Add one to the application first.")
 
     follow_up = FollowUp.objects.select_for_update().filter(application=app).exclude(status=FollowUp.CLOSED).first()
     if follow_up and follow_up.status == FollowUp.ESCALATED:

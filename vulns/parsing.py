@@ -210,7 +210,8 @@ def _detect_encoding(sample):
         return "cp1252"
 
 
-def _csv_rows(fileobj):
+def _csv_rows(fileobj, finder=None):
+    finder = finder or find_header
     csv.field_size_limit(16 * 1024 * 1024)
     sample = fileobj.read(1024 * 1024)
     fileobj.seek(0)
@@ -219,21 +220,21 @@ def _csv_rows(fileobj):
     delimiter = ","
     for candidate in (",", ";", "\t", "|"):  # keep the first delimiter that yields a recognizable header row
         head = list(islice(csv.reader(io.StringIO(text, newline=""), delimiter=candidate), HEADER_SCAN_ROWS))
-        if find_header(list(enumerate(head, start=1)))[0] is not None:
+        if finder(list(enumerate(head, start=1)))[0] is not None:
             delimiter = candidate
             break
     stream = io.TextIOWrapper(fileobj, encoding=encoding, errors="replace", newline="")
     return enumerate(csv.reader(stream, delimiter=delimiter), start=1)
 
 
-def read_rows(fileobj, filename):
+def read_rows(fileobj, filename, finder=None):
     """Yields (row number, values) without loading the file into memory."""
     fileobj = getattr(fileobj, "file", fileobj)
     name = filename.lower()
     if name.endswith((".xlsx", ".xlsm")):
         return _excel_rows(fileobj)
     if name.endswith(".csv"):
-        return _csv_rows(fileobj)
+        return _csv_rows(fileobj, finder)
     raise FileFormatError("Unsupported file type. Upload a .csv, .xlsx or .xlsm file.")
 
 

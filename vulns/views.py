@@ -20,14 +20,15 @@ from accounts.permissions import (
 )
 from core.models import AppSettings
 
-from . import assignment, followups, jobs, lifecycle
+from . import assignment, contacts, followups, jobs, lifecycle
 from .columns import COLUMNS, SEVERITY_ORDER
-from .forms import ApplicationForm, ResponseForm, UploadForm
+from .forms import ApplicationForm, ContactUploadForm, ResponseForm, UploadForm
 from .models import (
-    AlertSummary, Application, CloudAccount, FollowUp, FollowUpEvent, ImportRun, Job, LegacyUpload, Notification,
-    PlannedRemediation, Vulnerability,
+    AlertSummary, Application, CloudAccount, ContactImport, ContactImportRow, FollowUp, FollowUpEvent, ImportRun, Job,
+    LegacyUpload, Notification, PlannedRemediation, Vulnerability,
 )
 from .notify import NotificationNotAllowed, stream_vulns_csv
+from .parsing import FileFormatError
 from .queries import (
     OPEN, REMEDIATED, VULN_STATUSES, application_rows, filter_vulns, followup_cutoff, iter_vulns, keyset_paginate,
     match_count, not_seen_cutoff, overdue_q, paginate, scoped_apps, scoped_followups, scoped_notifications,
@@ -143,7 +144,7 @@ def dashboard(request):
 
 APP_STATUSES = [
     ("", "All"), ("with_vulns", "With vulnerabilities"), ("registered", "Contacts set"), ("unregistered", "No contacts"),
-    ("no_email", "No support email"), ("not_rescanned", "Not rescanned"), ("all_remediated", "All remediated"),
+    ("no_email", "No team email"), ("not_rescanned", "Not rescanned"), ("all_remediated", "All remediated"),
 ]
 
 
@@ -220,6 +221,114 @@ def app_delete(request, app_id):
     vuln_count = sum(n for n in AlertSummary.objects.filter(owner_app_id=app_id).values_list("total", flat=True))
     context = {"app": app, "vuln_count": vuln_count, "account_count": app.cloud_accounts.count()}
     return render(request, "vulns/app_delete.html", context)
+
+
+# --- bulk contacts ----------------------------------------------------------------------
+
+CONTACT_TABS = [
+    ("changes", "New and updated"), ("new", "New"), ("updated", "Updated"), ("unchanged", "Unchanged"), ("rejected", "Rejected"),
+]
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _download(content, content_type, filename):
+    response = HttpResponse(content, content_type=content_type)
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@admin_required
+def app_contacts(request):
+    if request.method == "POST":
+        form = ContactUploadForm(request.POST, request.FILES)
+        if not form.is_valid():
+            messages.error(request, "Choose a CSV or Excel file.")
+            return redirect("app_contacts")
+        upload = form.cleaned_data["file"]
+        if upload.size > contacts.MAX_FILE_BYTES:
+            messages.error(request, "Contact files can be up to 10 MB.")
+            return redirect("app_contacts")
+        try:
+            preview = contacts.create_preview(upload, upload.name, request.user)
+        except FileFormatError as exc:
+            messages.error(request, str(exc))
+            return redirect("app_contacts")
+        return redirect("app_contacts_detail", pk=preview.pk)
+    context = {
+        **paginate(request, ContactImport.objects.select_related("created_by", "applied_by")),
+        "form": ContactUploadForm(),
+        "missing_count": contacts.missing_team_email_count(),
+        "app_count": Application.objects.count(),
+        "columns": contacts.CONTACT_COLUMNS,
+        "max_rows": contacts.MAX_ROWS,
+    }
+    return render(request, "vulns/app_contacts.html", context)
+
+
+@admin_required
+def app_contacts_template(request, fmt):
+    scope = request.GET.get("scope", "blank")
+    if fmt not in ("csv", "xlsx") or scope not in contacts.SCOPES:
+        raise Http404
+    rows = contacts.template_rows(scope)
+    name = {"blank": "template", "missing": "missing_team_email", "all": "all"}[scope]
+    if fmt == "csv":
+        return _download(contacts.as_csv(rows), "text/csv", f"herald_contacts_{name}.csv")
+    return _download(contacts.as_xlsx(rows), XLSX_TYPE, f"herald_contacts_{name}.xlsx")
+
+
+@admin_required
+def app_contacts_detail(request, pk):
+    contact_import = get_object_or_404(ContactImport, pk=pk)
+    default = "rejected" if not contact_import.change_count and contact_import.rejected_count else "changes"
+    tab = request.GET.get("show", default)
+    if tab not in dict(CONTACT_TABS):
+        tab = default
+    rows = contact_import.rows.all()
+    if tab == "changes":
+        rows = rows.filter(action__in=[ContactImportRow.NEW, ContactImportRow.UPDATED])
+    else:
+        rows = rows.filter(action=tab)
+    counts = {
+        "changes": contact_import.change_count, "new": contact_import.new_count, "updated": contact_import.updated_count,
+        "unchanged": contact_import.unchanged_count, "rejected": contact_import.rejected_count,
+    }
+    context = {
+        **paginate(request, rows),
+        "contact_import": contact_import,
+        "tab": tab,
+        "tabs": [(key, label, counts[key]) for key, label in CONTACT_TABS],
+    }
+    return render(request, "vulns/app_contacts_detail.html", context)
+
+
+@admin_required
+@require_POST
+def app_contacts_apply(request, pk):
+    contact_import = get_object_or_404(ContactImport, pk=pk)
+    try:
+        applied = contacts.apply_import(contact_import, request.user)
+    except contacts.ContactImportStale as exc:
+        messages.error(request, str(exc))
+        return redirect("app_contacts_detail", pk=pk)
+    messages.success(request, f"Contacts saved: {applied.new_count} new, {applied.updated_count} updated.")
+    return redirect("app_contacts_detail", pk=pk)
+
+
+@admin_required
+@require_POST
+def app_contacts_discard(request, pk):
+    contact_import = get_object_or_404(ContactImport, pk=pk, status=ContactImport.PREVIEW)
+    contact_import.delete()
+    messages.info(request, "Preview discarded. No contacts were changed.")
+    return redirect("app_contacts")
+
+
+@admin_required
+def app_contacts_rejected(request, pk):
+    contact_import = get_object_or_404(ContactImport, pk=pk)
+    content = contacts.as_csv(contacts.rejected_rows(contact_import), extra_headers=["Reason"])
+    return _download(content, "text/csv", f"herald_contacts_{pk}_rejected.csv")
 
 
 def _detail_vulns(request, app_id):

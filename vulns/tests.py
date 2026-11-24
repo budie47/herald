@@ -1,3 +1,4 @@
+import csv
 import io
 from unittest import mock
 from urllib.parse import urlencode
@@ -13,11 +14,11 @@ from openpyxl import Workbook
 from accounts.models import Role, User
 from core.models import AppSettings, EmailSettings
 
-from . import assignment, followups, lifecycle
-from .columns import COLUMNS, REQUIRED
+from . import assignment, contacts, followups, lifecycle
+from .columns import CONTACT_COLUMNS, COLUMNS, REQUIRED
 from .models import (
-    AccountAssignment, AlertSummary, Application, Asset, CloudAccount, CveRecord, FollowUp, FollowUpEvent, ImportFile,
-    ImportRun, Job, Notification, PlannedRemediation, Vulnerability,
+    AccountAssignment, AlertSummary, Application, Asset, CloudAccount, ContactImport, ContactImportRow, CveRecord, FollowUp,
+    FollowUpEvent, ImportFile, ImportRun, Job, Notification, PlannedRemediation, Vulnerability,
 )
 from .notify import NotificationNotAllowed
 from .parsing import FileFormatError, normalize_account_id, normalize_provider, parse_file, to_datetime
@@ -586,7 +587,7 @@ class ScaleTests(TestCase):
         with self.assertRaises(NotificationNotAllowed):
             followups.notify_support(app, self.admin)
         self.client.force_login(self.admin)
-        self.assertContains(self.client.get("/"), "no support email")
+        self.assertContains(self.client.get("/"), "no team email")
 
     def test_picker_search_and_suggestion(self):
         finish_import(self.admin, csv_file([row("U1"), row("T1", app="APP-5")]))
@@ -692,3 +693,176 @@ class ScaleTests(TestCase):
         self.assertEqual(vuln.status, "open")
         self.assertIsNone(vuln.archived_at)
         self.assertIsNotNone(vuln.context)
+
+
+CONTACT_HEADERS = [label for label, _ in CONTACT_COLUMNS]
+
+
+def contact_row(app_id, **cells):
+    return [app_id] + [cells.get(key, "") for key in contacts.CONTACT_FIELDS[1:]]
+
+
+def contact_file(rows, headers=CONTACT_HEADERS, name="contacts.csv", delimiter=","):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=delimiter)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return SimpleUploadedFile(name, buffer.getvalue().encode())
+
+
+class ContactImportTests(TestCase):
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+        self.client.force_login(self.admin)
+        self.app = Application.objects.create(
+            app_id="APP-1", name="Payments", support_team="Pay team", support_emails="pay@example.com",
+            owner_name="Owner", owner_email="owner@example.com", notes="Keep me",
+        )
+
+    def preview(self, *rows, **kwargs):
+        upload = contact_file(rows, **kwargs)
+        return contacts.create_preview(upload, upload.name, self.admin)
+
+    def test_template_has_the_agreed_columns(self):
+        self.assertEqual(CONTACT_HEADERS, [
+            "APP ID", "Name", "Team Name", "Team Email", "Owner Name", "Owner Email", "Additional Emails List",
+            "Business Service", "Department", "Notes",
+        ])
+        response = self.client.get("/applications/contacts/template.csv")
+        self.assertEqual(response.content.decode("utf-8-sig").strip(), ",".join(CONTACT_HEADERS))
+        self.assertEqual(self.client.get("/applications/contacts/template.xlsx").status_code, 200)
+
+    def test_preview_changes_nothing_until_applied(self):
+        preview = self.preview(contact_row("APP-1", support_team="New team"), contact_row("APP-2", name="Portal"))
+        self.assertEqual((preview.new_count, preview.updated_count), (1, 1))
+        self.app.refresh_from_db()
+        self.assertEqual(self.app.support_team, "Pay team")
+        self.assertFalse(Application.objects.filter(app_id="APP-2").exists())
+        contacts.apply_import(preview, self.admin)
+        self.app.refresh_from_db()
+        self.assertEqual(self.app.support_team, "New team")
+        self.assertEqual(Application.objects.get(app_id="APP-2").source, "manual")
+        with self.assertRaises(contacts.ContactImportStale):
+            contacts.apply_import(preview, self.admin)
+
+    def test_blank_keeps_and_clear_removes(self):
+        preview = self.preview(contact_row("APP-1", owner_name="clear", department="Finance"))
+        contacts.apply_import(preview, self.admin)
+        self.app.refresh_from_db()
+        self.assertEqual((self.app.owner_name, self.app.department), ("", "Finance"))
+        self.assertEqual((self.app.notes, self.app.support_emails), ("Keep me", "pay@example.com"))
+
+    def test_losing_team_email_is_flagged(self):
+        preview = self.preview(contact_row("APP-1", support_emails="CLEAR"))
+        self.assertEqual(preview.team_email_removed_count, 1)
+        response = self.client.get(f"/applications/contacts/{preview.pk}/")
+        self.assertContains(response, "will lose")
+
+    def test_email_order_and_case_is_not_a_change(self):
+        Application.objects.filter(pk=self.app.pk).update(support_emails="a@example.com; b@example.com")
+        preview = self.preview(contact_row("APP-1", support_emails="B@example.com, a@example.com"))
+        self.assertEqual((preview.updated_count, preview.unchanged_count), (0, 1))
+
+    def test_bad_rows_are_rejected_and_good_rows_apply(self):
+        preview = self.preview(
+            contact_row("APP-3", name="Good"), contact_row("APP-4", support_emails="good@example.com; not-an-email"),
+            contact_row("APP-5", owner_email="a@example.com; b@example.com"), contact_row("", name="No ID"),
+            contact_row("APP/6", name="Slash"),
+        )
+        self.assertEqual((preview.new_count, preview.rejected_count), (1, 4))
+        contacts.apply_import(preview, self.admin)
+        self.assertEqual(set(Application.objects.values_list("app_id", flat=True)), {"APP-1", "APP-3"})
+        body = self.client.get(f"/applications/contacts/{preview.pk}/rejected.csv").content.decode("utf-8-sig")
+        self.assertIn("not-an-email", body)
+        self.assertIn("Reason", body.splitlines()[0])
+        again = contacts.create_preview(SimpleUploadedFile("fixed.csv", body.encode()), "fixed.csv", self.admin)
+        self.assertEqual(again.rejected_count, 4)  # the Reason column is ignored on upload
+
+    def test_duplicates(self):
+        preview = self.preview(
+            contact_row("APP-7", name="Same"), contact_row("app-7", name="Same"),
+            contact_row("APP-8", name="One"), contact_row("APP-8", name="Two"),
+        )
+        self.assertEqual((preview.new_count, preview.duplicate_count, preview.rejected_count), (1, 1, 2))
+        self.assertIn("different values", preview.rows.filter(app_id="APP-8").first().reason)
+
+    def test_app_ids_are_uppercased_and_case_clashes_are_rejected(self):
+        Application.objects.create(app_id="app-old")
+        preview = self.preview(contact_row("app-9", name="Lower"), contact_row("APP-OLD", name="Clash"))
+        self.assertTrue(preview.rows.filter(app_id="APP-9", action=ContactImportRow.NEW).exists())
+        self.assertIn("app-old", preview.rows.get(app_id="APP-OLD").reason)
+
+    def test_new_app_not_in_scans_is_marked(self):
+        AlertSummary.objects.create(owner_app_id="APP-SEEN", cloud_account_id=1, status="open", severity="High", total=1)
+        preview = self.preview(contact_row("APP-SEEN", name="Seen"), contact_row("APP-TYPO", name="Typo"))
+        self.assertEqual(preview.not_in_scans_count, 1)
+        self.assertTrue(preview.rows.get(app_id="APP-TYPO").not_in_scans)
+
+    def test_stale_preview_is_blocked(self):
+        preview = self.preview(contact_row("APP-1", support_team="From file"), contact_row("APP-2", name="New"))
+        Application.objects.filter(pk=self.app.pk).update(support_team="Edited meanwhile")
+        with self.assertRaises(contacts.ContactImportStale):
+            contacts.apply_import(preview, self.admin)
+        self.app.refresh_from_db()
+        self.assertEqual(self.app.support_team, "Edited meanwhile")
+        self.assertFalse(Application.objects.filter(app_id="APP-2").exists())
+        self.assertEqual(ContactImport.objects.get(pk=preview.pk).status, ContactImport.PREVIEW)
+
+    def test_missing_column_is_refused(self):
+        upload = contact_file([["APP-1", "x"]], headers=["APP ID", "Team Emial"])
+        response = self.client.post("/applications/contacts/", {"file": upload}, follow=True)
+        self.assertContains(response, "Missing column(s)")
+        self.assertFalse(ContactImport.objects.exists())
+
+    def test_excel_and_semicolon_csv(self):
+        workbook = Workbook()
+        workbook.active.append(CONTACT_HEADERS)
+        workbook.active.append(contact_row(1042.0, support_emails="x@example.com;y@example.com"))
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        upload = SimpleUploadedFile("contacts.xlsx", buffer.getvalue())
+        preview = contacts.create_preview(upload, upload.name, self.admin)
+        self.assertEqual(preview.rows.get().changes["support_emails"][1], "x@example.com, y@example.com")
+        self.assertEqual(preview.rows.get().app_id, "1042")
+        semi = self.preview(contact_row("APP-2", name="Semi"), delimiter=";")
+        self.assertEqual(semi.new_count, 1)
+
+    def test_prefilled_download_lists_gaps_and_keeps_formulas_as_text(self):
+        Application.objects.create(app_id="APP-GAP", name="=HYPERLINK(1)")
+        body = self.client.get("/applications/contacts/template.csv?scope=missing").content.decode("utf-8-sig")
+        self.assertIn("APP-GAP,'=HYPERLINK(1)", body)
+        self.assertNotIn("APP-1,", body)
+        self.assertEqual(self.client.get("/applications/contacts/template.xlsx?scope=all").status_code, 200)
+        upload = SimpleUploadedFile("round.csv", body.encode())
+        preview = contacts.create_preview(upload, upload.name, self.admin)
+        self.assertEqual(preview.unchanged_count, 1)
+
+    def test_weekly_scan_does_not_overwrite_imported_contacts(self):
+        contacts.apply_import(self.preview(contact_row("APP-1", name="Official name")), self.admin)
+        finish_import(self.admin, csv_file([row("A1", app="APP-1")]))
+        self.app.refresh_from_db()
+        self.assertEqual((self.app.name, self.app.support_emails), ("Official name", "pay@example.com"))
+
+    def test_only_admins_can_import(self):
+        operator = User.objects.create_user("ops@example.com", "pw-Example-123", role=Role.objects.get(key=Role.OPERATION))
+        self.client.force_login(operator)
+        self.assertEqual(self.client.get("/applications/contacts/").status_code, 403)
+        self.assertEqual(self.client.get("/applications/contacts/template.csv").status_code, 403)
+
+    def test_form_uppercases_new_app_id_and_stops_case_duplicates(self):
+        response = self.client.post("/applications/new/", {"app_id": " app-20 ", "support_emails": "a@example.com; b@example.com"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Application.objects.get(app_id="APP-20").support_emails, "a@example.com, b@example.com")
+        response = self.client.post("/applications/new/", {"app_id": "app-1"})
+        self.assertContains(response, "Already registered as APP-1")
+
+    def test_edit_page_sections_and_locked_id(self):
+        response = self.client.get("/applications/APP-1/edit/")
+        for text in ("Notification contacts", "Team email", "Owner email", "Additional emails", "Email preview"):
+            self.assertContains(response, text)
+        response = self.client.post("/applications/APP-1/edit/", {"app_id": "HACKED", "name": "Renamed"})
+        self.assertEqual(response.status_code, 302)
+        self.app.refresh_from_db()
+        self.assertEqual((self.app.app_id, self.app.name), ("APP-1", "Renamed"))

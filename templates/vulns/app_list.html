@@ -4,7 +4,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
   <h1 class="h3 mb-0">Applications</h1>
-  {% if user.is_admin %}<a class="btn btn-primary btn-sm" href="{% url 'app_create' %}"><i class="bi bi-plus-lg"></i> Add application</a>{% endif %}
+  {% if user.is_admin %}<div class="d-flex gap-2"><a class="btn btn-outline-secondary btn-sm" href="{% url 'app_contacts' %}"><i class="bi bi-upload"></i> Import contacts</a><a class="btn btn-primary btn-sm" href="{% url 'app_create' %}"><i class="bi bi-plus-lg"></i> Add application</a></div>{% endif %}
 </div>
 
 {% if unregistered_count and user.can_view_all and params.status != "unregistered" %}
@@ -46,7 +46,7 @@
     <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send to the support teams of the selected applications? Apps with an open follow-up get a reminder.')"><i class="bi bi-envelope"></i> Send to support (<span id="bulk-count">0</span>)</button>
     <input type="text" name="remark" class="form-control form-control-sm w-auto flex-grow-1" style="max-width: 340px" placeholder="Optional remark" aria-label="Optional remark">
     <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="include_in_email" id="bulk-include"><label class="form-check-label" for="bulk-include">Include in email</label></div>
-    <span class="small text-muted">Only registered apps with a support email can be selected.</span>
+    <span class="small text-muted">Only registered apps with a team email can be selected.</span>
   </div>
   {% endif %}
   <div class="table-responsive">
@@ -63,7 +63,7 @@
         <td class="nowrap"><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
         {% if row.in_catalog %}
           <td>{{ row.app.name|default:"—" }}{% if row.app.scan_conflict %} <span class="badge text-bg-light border" title="The scan data has more than one name for this App ID">name differs</span>{% endif %}</td>
-          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no support email</span>{% if user.is_admin %} <a class="small" href="{% url 'app_edit' row.app_id %}">Add contacts</a>{% endif %}{% endif %}</div></td>
+          <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no team email</span>{% if user.is_admin %} <a class="small" href="{% url 'app_edit' row.app_id %}">Add contacts</a>{% endif %}{% endif %}</div></td>
           <td class="small">{{ row.app.business_service|default:"" }}{% if row.app.department %}<div class="text-muted">{{ row.app.department }}</div>{% endif %}</td>
         {% else %}
           <td colspan="3"><span class="badge text-bg-warning">unregistered</span>

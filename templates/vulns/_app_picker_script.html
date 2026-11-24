@@ -29,7 +29,7 @@ document.querySelectorAll('.app-picker').forEach(picker => {
     if (item.name) name.append(' · ' + item.name);
     const state = document.createElement('span');
     state.className = 'small nowrap ' + (item.has_support ? 'text-success' : 'text-warning-emphasis');
-    state.textContent = item.has_support ? '✓ Contacts set' : '⚠ No support email';
+    state.textContent = item.has_support ? '✓ Contacts set' : '⚠ No team email';
     title.append(name, state); el.append(title);
     const detail = item.note || (item.conflict ? 'Scan data has more than one name for this App ID' : '');
     if (detail) { const n = document.createElement('div'); n.className = 'small text-muted'; n.textContent = detail; el.append(n); }

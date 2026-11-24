@@ -6,7 +6,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from .columns import OTHER_SEVERITY_RANK
+from .columns import CONTACT_FIELDS, CONTACT_LABELS, OTHER_SEVERITY_RANK
 
 
 def split_emails(value):
@@ -637,3 +637,56 @@ class LegacyUpload(models.Model):
 
     class Meta:
         ordering = ["-uploaded_at"]
+
+
+class ContactImport(models.Model):
+    """One uploaded contacts file. Nothing reaches Application until the preview is applied."""
+
+    PREVIEW, APPLIED = "preview", "applied"
+
+    filename = models.CharField(max_length=255)
+    status = models.CharField(max_length=10, default=PREVIEW)
+    new_count = models.PositiveIntegerField(default=0)
+    updated_count = models.PositiveIntegerField(default=0)
+    unchanged_count = models.PositiveIntegerField(default=0)
+    rejected_count = models.PositiveIntegerField(default=0)
+    duplicate_count = models.PositiveIntegerField(default=0)
+    not_in_scans_count = models.PositiveIntegerField(default=0)
+    team_email_removed_count = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    @property
+    def is_preview(self):
+        return self.status == self.PREVIEW
+
+    @property
+    def change_count(self):
+        return self.new_count + self.updated_count
+
+
+class ContactImportRow(models.Model):
+    NEW, UPDATED, UNCHANGED, REJECTED = "new", "updated", "unchanged", "rejected"
+
+    contact_import = models.ForeignKey(ContactImport, on_delete=models.CASCADE, related_name="rows")
+    row_number = models.PositiveIntegerField()
+    app_id = models.CharField(max_length=100, blank=True)
+    action = models.CharField(max_length=10)
+    changes = models.JSONField(default=dict, blank=True)  # {field: [old, new]}
+    cells = models.JSONField(default=dict, blank=True)  # the original cells, kept for rejected rows
+    reason = models.TextField(blank=True)
+    not_in_scans = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["row_number", "id"]
+        indexes = [models.Index(fields=["contact_import", "action", "row_number"], name="contact_row_browse")]
+
+    def change_list(self):
+        return [(CONTACT_LABELS[key], *self.changes[key]) for key in CONTACT_FIELDS if key in self.changes]

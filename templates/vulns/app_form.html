@@ -1,13 +1,163 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
+<div style="max-width: 1120px">
 <a class="small" href="{% if app %}{% url 'app_detail' app.app_id %}{% else %}{% url 'app_list' %}{% endif %}">&larr; Back</a>
-<h1 class="h3 mb-3">{{ title }}</h1>
-<div class="card" style="max-width: 720px"><div class="card-body">
-  <form method="post">{% csrf_token %}
-    {% include "_form_fields.html" %}
-    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <button class="btn btn-primary">Save</button>
-  </form>
-</div></div>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ title }}</h1>
+  <span class="badge" id="ready-badge" role="status"></span>
+</div>
+{% for error in form.non_field_errors %}<div class="alert alert-danger py-2">{{ error }}</div>{% endfor %}
+
+<form method="post" id="app-form">{% csrf_token %}
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  <div class="row g-3 align-items-start">
+    <div class="col-lg-8">
+      <section class="card mb-3"><div class="card-body">
+        <h2 class="h6 mb-1"><i class="bi bi-grid-3x3-gap"></i> Application</h2>
+        <p class="small text-muted">What this application is and where it belongs.</p>
+        <div class="row g-3">
+          <div class="col-md-6">{% if app %}{% include "vulns/_app_field.html" with field=form.app_id label="App ID (locked)" hint="Alerts and history refer to this ID." %}{% else %}{% include "vulns/_app_field.html" with field=form.app_id hint="Saved in uppercase to match scan data." %}{% endif %}</div>
+          <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.name %}</div>
+          <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.business_service %}</div>
+          <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.department %}</div>
+        </div>
+      </div></section>
+
+      <section class="card mb-3"><div class="card-body">
+        <h2 class="h6 mb-1"><i class="bi bi-envelope"></i> Notification contacts</h2>
+        <p class="small text-muted">Who Herald emails, in the order they're contacted.</p>
+        <div class="contact-group">
+          <div class="small fw-semibold mb-2"><span class="contact-step">1</span> Team <span class="fw-normal text-muted">receives the first notification</span></div>
+          <div class="row g-3">
+            <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.support_team %}</div>
+            <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.support_emails %}</div>
+          </div>
+        </div>
+        <div class="contact-group">
+          <div class="small fw-semibold mb-2"><span class="contact-step">2</span> Owner <span class="fw-normal text-muted">receives escalations</span></div>
+          <div class="row g-3">
+            <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.owner_name %}</div>
+            <div class="col-md-6">{% include "vulns/_app_field.html" with field=form.owner_email %}</div>
+          </div>
+        </div>
+        <div class="contact-group">
+          <div class="small fw-semibold mb-2"><span class="contact-step">3</span> Additional <span class="fw-normal text-muted">copied on every email</span></div>
+          {% include "vulns/_app_field.html" with field=form.extra_emails %}
+        </div>
+      </div></section>
+
+      <section class="card"><div class="card-body">
+        <h2 class="h6 mb-1"><i class="bi bi-journal-text"></i> Notes</h2>
+        <p class="small text-muted">Internal only. Notes are never emailed.</p>
+        {% include "vulns/_app_field.html" with field=form.notes label="Notes" %}
+      </div></section>
+    </div>
+
+    <aside class="col-lg-4"><div class="card app-form-side"><div class="card-body">
+      <h2 class="h6">Email preview</h2>
+      <dl class="small mb-3">
+        <dt class="fw-normal text-muted">First notification to</dt><dd class="text-break" id="preview-team"></dd>
+        <dt class="fw-normal text-muted">Escalates to</dt><dd class="text-break" id="preview-owner"></dd>
+        <dt class="fw-normal text-muted">Copied</dt><dd class="text-break mb-0" id="preview-copied"></dd>
+      </dl>
+      <div class="d-grid gap-2">
+        <button class="btn btn-primary">{% if app %}Save changes{% else %}Add application{% endif %}</button>
+        <a class="btn btn-outline-secondary" href="{% if next %}{{ next }}{% elif app %}{% url 'app_detail' app.app_id %}{% else %}{% url 'app_list' %}{% endif %}">Cancel</a>
+      </div>
+    </div></div></aside>
+  </div>
+</form>
+</div>
+
+<script>
+(() => {
+  const form = document.getElementById('app-form');
+  const validEmail = email => /^[^\s@,;<>]+@([^\s@,;<>.]+\.)+[^\s@,;<>.]+$/.test(email) || /^[^\s@,;<>]+@localhost$/i.test(email);
+  const splitEmails = text => text.split(/[,;\s]+/).filter(Boolean);
+  const lists = {};
+
+  form.querySelectorAll('textarea[data-email-chips]').forEach(area => {
+    const box = document.createElement('div');
+    box.className = 'form-control email-chips';
+    const entry = document.createElement('input');
+    entry.type = 'text';
+    entry.id = area.id + '_entry';
+    entry.placeholder = area.placeholder;
+    entry.autocomplete = 'off';
+    box.append(entry);
+    area.after(box);
+    area.classList.add('d-none');
+    const label = form.querySelector(`label[for="${area.id}"]`);
+    if (label) label.htmlFor = entry.id;
+    let emails = [];
+
+    const render = () => {
+      box.querySelectorAll('.email-chip').forEach(chip => chip.remove());
+      emails.forEach(email => {
+        const chip = document.createElement('span');
+        chip.className = 'email-chip' + (validEmail(email) ? '' : ' invalid');
+        if (!validEmail(email)) chip.title = 'Not a valid email address';
+        chip.append(email);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', 'Remove ' + email);
+        remove.textContent = '×';
+        remove.addEventListener('click', () => { emails = emails.filter(e => e !== email); sync(); entry.focus(); });
+        chip.append(remove);
+        box.insertBefore(chip, entry);
+      });
+      entry.placeholder = emails.length ? '' : area.placeholder;
+    };
+    const sync = () => { area.value = emails.join(', '); lists[area.name] = emails; render(); refresh(); };
+    const add = text => {
+      splitEmails(text).forEach(email => {
+        if (!emails.some(e => e.toLowerCase() === email.toLowerCase())) emails.push(email);
+      });
+      sync();
+    };
+    const commit = () => { if (entry.value.trim()) { add(entry.value); entry.value = ''; } };
+
+    box.addEventListener('click', e => { if (e.target === box) entry.focus(); });
+    entry.addEventListener('keydown', e => {
+      if (['Enter', ',', ';', ' '].includes(e.key)) { e.preventDefault(); commit(); }
+      else if (e.key === 'Backspace' && !entry.value && emails.length) { emails.pop(); sync(); }
+    });
+    entry.addEventListener('blur', commit);
+    entry.addEventListener('paste', e => {
+      e.preventDefault();
+      add(entry.value + ' ' + e.clipboardData.getData('text'));
+      entry.value = '';
+    });
+    form.addEventListener('submit', commit);
+    lists[area.name] = emails;
+    emails = splitEmails(area.value).filter((e, i, all) => all.findIndex(x => x.toLowerCase() === e.toLowerCase()) === i);
+    lists[area.name] = emails;
+    render();
+  });
+
+  const value = name => (form.elements[name] ? form.elements[name].value.trim() : '');
+  const ownerEmail = form.elements.owner_email;
+
+  function refresh() {
+    const team = (lists.support_emails || []).filter(validEmail);
+    const copied = (lists.extra_emails || []).filter(validEmail);
+    const badge = document.getElementById('ready-badge');
+    badge.className = 'badge ' + (team.length ? 'text-bg-success' : 'text-bg-warning');
+    badge.textContent = team.length ? 'Ready to notify' : "Can't notify yet";
+    document.getElementById('preview-team').textContent =
+      team.length ? team[0] + (team.length > 1 ? ` +${team.length - 1} more` : '') : 'Add a team email';
+    const owner = value('owner_email');
+    document.getElementById('preview-owner').textContent =
+      owner ? (value('owner_name') ? `${value('owner_name')} (${owner})` : owner) : 'No owner email';
+    document.getElementById('preview-copied').textContent =
+      copied.length ? `${copied.length} additional email${copied.length > 1 ? 's' : ''}` : 'No one';
+    ownerEmail.classList.toggle('is-invalid', Boolean(owner) && !validEmail(owner));
+  }
+
+  form.elements.owner_name.addEventListener('input', refresh);
+  ownerEmail.addEventListener('input', refresh);
+  refresh();
+})();
+</script>
 {% endblock %}

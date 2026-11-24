@@ -20,7 +20,7 @@
   {% if follow_up %}
   <p class="small text-muted">Opened {{ follow_up.opened_at|date:"Y-m-d H:i" }} UTC with {{ follow_up.first_vuln_count }} open vulnerabilit{{ follow_up.first_vuln_count|pluralize:"y,ies" }} ({{ summary.open }} now) · {{ follow_up.reminder_count }} reminder{{ follow_up.reminder_count|pluralize }}{% if follow_up.is_waiting %} · waiting since {{ follow_up.waiting_since|date:"Y-m-d" }}, overdue after {{ followup_days }} days{% endif %}</p>
   {% elif not app.has_email %}
-  <p class="small text-muted">Add a support email to this application to start a follow-up.</p>
+  <p class="small text-muted">Add a team email to this application to start a follow-up.</p>
   {% else %}
   <p class="small text-muted">Use Send to support to notify the support team and start tracking their response.</p>
   {% endif %}
