@@ -26,15 +26,21 @@ EXCEL_EPOCH = datetime(1899, 12, 30)
 DATE_FORMATS = [
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
     "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
-    "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
-    "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%d.%m.%Y",
+    "%d.%m.%Y",
     "%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%b-%Y %H:%M:%S", "%d-%b-%y",
     "%b %d, %Y", "%B %d, %Y", "%b %d %Y",
-    "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y",
 ]
+# All-number dates with the year last, such as 11/05/2026: day/month or month/day depends on the file.
+NUMERIC_DATE = re.compile(r"(\d{1,2})([/\- ])(\d{1,2})\2(\d{4}|\d{2})(?:[ T].+)?")
+NO_YEAR_DATE = re.compile(r"\d{1,2}[/-]\d{1,2}")
+DATE_ORDERS = {"dmy": True, "mdy": False}
 
 
 class FileFormatError(Exception):
+    pass
+
+
+class AmbiguousDate(ValueError):
     pass
 
 
@@ -61,7 +67,36 @@ def _from_excel_serial(number, label):
     return EXCEL_EPOCH + timedelta(days=float(number))
 
 
-def to_datetime(raw, label):
+def _numeric_date_parts(raw):
+    match = NUMERIC_DATE.fullmatch(raw.strip()) if isinstance(raw, str) else None
+    return (int(match[1]), int(match[3])) if match else None
+
+
+def _read_numeric_date(text, first, second, label, day_first):
+    """Reads 11/05/2026 in the file's order. It never guesses, and never swaps a value that doesn't fit that order."""
+    if first > 12 and second > 12:
+        raise ValueError(f"{label}: '{text}' is not a valid date")
+    if first > 12:
+        order = True
+    elif second > 12:
+        order = False
+    elif first == second:
+        order = True if day_first is None else day_first
+    elif day_first is None:
+        raise AmbiguousDate(f"{label}: '{text}' could be day/month or month/day")
+    else:
+        order = day_first
+    if day_first is not None and order != day_first:
+        expected = "day/month/year" if day_first else "month/day/year"
+        raise ValueError(f"{label}: '{text}' doesn't match this file's {expected} dates")
+    try:
+        return dateparser.parse(text, dayfirst=order)
+    except (ValueError, OverflowError):
+        raise ValueError(f"{label}: '{text}' is not a valid date") from None
+
+
+def to_datetime(raw, label, day_first=None):
+    """day_first is the file's date order: True, False, or None when it isn't known (an ambiguous date then raises)."""
     if _is_blank(raw):
         return None
     if isinstance(raw, datetime):
@@ -77,6 +112,11 @@ def to_datetime(raw, label):
             value = datetime.strptime(text, "%Y%m%d")
         elif re.fullmatch(r"\d+(\.\d+)?", text):
             value = _from_excel_serial(float(text), label)
+        parts = _numeric_date_parts(text)
+        if parts:
+            value = _read_numeric_date(text, *parts, label, day_first)
+        elif NO_YEAR_DATE.fullmatch(text):
+            raise ValueError(f"{label}: '{text}' has no year")
         if value is None:
             try:
                 value = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -161,17 +201,19 @@ def normalize_account_id(text, provider):
         raise ValueError(f"Account ID: '{value}' was rounded by Excel; export the column as text")
     if GUID.fullmatch(value):
         return value.lower()
+    if "/" in value:
+        raise ValueError(f"Account ID: '{value}' can't contain '/'")
     if provider == "AWS" and re.fullmatch(r"\d{1,12}", value):
         return value.zfill(12)
     return value
 
 
-def convert(key, raw):
+def convert(key, raw, day_first=None):
     """Returns a JSON-friendly value: dates become ISO strings in UTC."""
     kind = TYPES[key]
     label = LABELS[key]
     if kind == DATE:
-        value = to_datetime(raw, label)
+        value = to_datetime(raw, label, day_first)
         return value.isoformat() if value else None
     if kind == NUMBER:
         return to_number(raw, label)
@@ -223,8 +265,15 @@ def _csv_rows(fileobj, finder=None):
         if finder(list(enumerate(head, start=1)))[0] is not None:
             delimiter = candidate
             break
-    stream = io.TextIOWrapper(fileobj, encoding=encoding, errors="replace", newline="")
-    return enumerate(csv.reader(stream, delimiter=delimiter), start=1)
+
+    def rows():
+        stream = io.TextIOWrapper(fileobj, encoding=encoding, errors="replace", newline="")
+        try:
+            yield from enumerate(csv.reader(stream, delimiter=delimiter), start=1)
+        finally:
+            stream.detach()  # the caller owns the file, and may read it again
+
+    return rows()
 
 
 def read_rows(fileobj, filename, finder=None):
@@ -250,9 +299,12 @@ def find_header(rows):
 class StreamParser:
     """Parses a file in batches. Each batch is (accepted records, rejected rows)."""
 
-    def __init__(self, fileobj, filename):
+    def __init__(self, fileobj, filename, date_order=""):
         self.rows_read = 0
         self.unknown_columns = []
+        self.day_first = DATE_ORDERS.get(date_order)
+        self._file = getattr(fileobj, "file", fileobj)
+        self._filename = filename
         rows = read_rows(fileobj, filename)
         head = list(islice(rows, HEADER_SCAN_ROWS))
         position, header = find_header(head)
@@ -275,17 +327,54 @@ class StreamParser:
             else:
                 self.unknown_columns.append(str(title).strip())
         self.missing_columns = [LABELS[key] for key in LABELS if key not in seen_keys]
+        self._date_indexes = [index for index, key in self._mapping if TYPES[key] == DATE]
+
+    def _learn_date_order(self, raw):
+        """The first date that can only be read one way sets the order for the whole file."""
+        if self.day_first is not None:
+            return
+        parts = _numeric_date_parts(raw)
+        if not parts or parts[0] == parts[1]:
+            return
+        first, second = parts
+        if (first > 12) != (second > 12):
+            self.day_first = first > 12
+        elif first <= 12:
+            self.day_first = self._scan_for_date_order(raw)
+
+    def _scan_for_date_order(self, example):
+        """Only runs when a date is ambiguous, so files with ISO dates or Excel date cells are not read twice."""
+        position = self._file.tell()
+        self._file.seek(0)
+        rows = read_rows(self._file, self._filename)
+        try:
+            for _, values in rows:
+                for index in self._date_indexes:
+                    parts = _numeric_date_parts(values[index]) if index < len(values) else None
+                    if parts and (parts[0] > 12) != (parts[1] > 12):
+                        return parts[0] > 12
+        finally:
+            rows.close()
+            self._file.seek(position)
+        raise FileFormatError(
+            f"Dates such as '{example.strip()}' could be day/month or month/day, and no date in this file settles it. "
+            "Upload it again and choose the date order, or export the dates as YYYY-MM-DD."
+        )
 
     def _parse(self, row_number, values):
         record, problems = {}, []
         for index, key in self._mapping:
             raw = values[index] if index < len(values) else None
+            if TYPES[key] == DATE:
+                self._learn_date_order(raw)
             try:
-                record[key] = convert(key, raw)
+                record[key] = convert(key, raw, self.day_first)
             except ValueError as exc:
                 record[key] = None
                 problems.append(str(exc))
         record["app_id"] = (record.get("app_id") or "").upper()
+        if "/" in record["app_id"]:
+            problems.append(f"App ID: '{record['app_id']}' can't contain '/'")
         record["provider"] = normalize_provider(record.get("provider"), record.get("account_id"))
         try:
             record["account_id"] = normalize_account_id(record.get("account_id"), record["provider"])

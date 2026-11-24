@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from core.forms import BootstrapMixin
 
-from .models import Application, split_emails, unique_emails
+from .models import Application, ImportFile, split_emails, unique_emails
 
 
 class ApplicationForm(BootstrapMixin, forms.ModelForm):
@@ -75,6 +75,10 @@ class ResponseForm(BootstrapMixin, forms.Form):
 
 class UploadForm(forms.Form):
     file = forms.FileField(widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".csv,.xlsx,.xlsm"}))
+    date_order = forms.ChoiceField(
+        label="Date order", required=False, choices=ImportFile.DATE_ORDER_CHOICES,
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
 
 
 class ContactUploadForm(forms.Form):

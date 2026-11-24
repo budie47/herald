@@ -38,11 +38,14 @@ from .queries import (
 REJECTED_SAMPLE = 200
 
 
+def _safe_next(request):
+    target = request.POST.get("next") or request.GET.get("next") or ""
+    allowed = url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}, require_https=request.is_secure())
+    return target if allowed else ""
+
+
 def _back(request, fallback):
-    target = request.POST.get("next") or request.GET.get("next")
-    if target and url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
-        return redirect(target)
-    return redirect(fallback)
+    return redirect(_safe_next(request) or fallback)
 
 
 # --- dashboard --------------------------------------------------------------------------
@@ -190,8 +193,9 @@ def app_create(request):
         app = form.save()
         messages.success(request, f"Application {app.app_id} registered.")
         return _back(request, redirect("app_detail", app_id=app.app_id).url)
-    next_url = request.POST.get("next") or request.GET.get("next") or ""
-    return render(request, "vulns/app_form.html", {"form": form, "title": "Register application", "next": next_url})
+    return render(
+        request, "vulns/app_form.html", {"form": form, "title": "Register application", "next": _safe_next(request)}
+    )
 
 
 @admin_required
@@ -486,7 +490,7 @@ def account_assign(request):
             "select_all": select_all,
             "selection": selection,
             "account_pks": [] if select_all else list(accounts.values_list("pk", flat=True)),
-            "next": request.POST.get("next", ""),
+            "next": _safe_next(request),
         }
         return render(request, "vulns/account_assign_confirm.html", context)
     changed = assignment.assign(list(accounts.values_list("pk", flat=True)), application, request.user)
@@ -690,7 +694,7 @@ def _store_upload(request, run_getter):
     if run.phase == "finalizing":
         messages.error(request, "This import is being finalized. Upload again when it finishes.")
         return run
-    import_file = lifecycle.add_file(run, uploaded, request.user)
+    import_file = lifecycle.add_file(run, uploaded, request.user, form.cleaned_data["date_order"])
     messages.success(request, f"{import_file.filename} added to import #{run.pk}. Herald reads it in the background.")
     return run
 

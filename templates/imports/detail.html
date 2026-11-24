@@ -40,6 +40,7 @@
     {% if run.is_draft and run.phase != "finalizing" %}
     <form method="post" action="{% url 'import_add_file' run.pk %}" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">{% csrf_token %}
       <div class="flex-grow-1">{{ form.file }}</div>
+      <div><label class="visually-hidden" for="{{ form.date_order.id_for_label }}">Date order for text dates</label>{{ form.date_order }}</div>
       <button class="btn btn-outline-primary nowrap"><i class="bi bi-plus-lg"></i> Add another batch</button>
     </form>
     {% endif %}

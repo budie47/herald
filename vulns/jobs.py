@@ -46,6 +46,10 @@ def recover():
 
 
 def _failed(job, message):
+    if job.kind == PARSE:  # first, so a database error here leaves the job to be recovered and retried
+        from . import lifecycle
+
+        lifecycle.fail_file(job.payload.get("file"), message)
     job.status = Job.FAILED
     job.message = message[:2000]
     job.finished_at = timezone.now()

@@ -79,7 +79,7 @@
     {% if missing_support_total %}
     <div class="alert alert-warning py-2 small mt-2 mb-0">
       <strong>{{ missing_support_total|intcomma }} application{{ missing_support_total|pluralize }} with open alerts {{ missing_support_total|pluralize:"has,have" }} no team email</strong>, so {{ missing_support_total|pluralize:"it,they" }} can't be notified yet.
-      <div class="mt-1">{% for app_id, n in missing_support %}<a href="{% url 'app_detail' app_id %}" class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</a>{% endfor %}</div>
+      <div class="mt-1">{% for app_id, n in missing_support %}{% url 'app_detail' app_id as app_href %}{% if app_href %}<a href="{{ app_href }}" class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</a>{% else %}<span class="me-2 nowrap" title="This ID contains '/', so it has no page. Correct it in the scan data.">{{ app_id }} ({{ n|intcomma }})</span>{% endif %}{% endfor %}</div>
       <a href="{% url 'app_list' %}?status=no_email">See all</a>
     </div>
     {% endif %}
@@ -110,7 +110,7 @@
     <tbody>
     {% for row in top_apps %}
       <tr>
-        <td><a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a></td>
+        <td>{% url 'app_detail' row.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ row.app_id }}</a>{% else %}<span title="This ID contains '/', so it has no page. Correct it in the scan data.">{{ row.app_id }}</span>{% endif %}</td>
         <td class="text-end">{{ row.total }}</td>
         <td>{% for sev, n in row.severities %}<span class="sev {{ sev|sev_class }}" title="{{ sev }}">{{ n }}</span> {% endfor %}</td>
         <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>

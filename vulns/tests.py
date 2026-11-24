@@ -1,27 +1,34 @@
 import csv
 import io
+import os
+import runpy
+import sys
 from unittest import mock
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone as dt_timezone
 
+from django.conf import settings
 from django.core import mail
+from django.core.exceptions import ImproperlyConfigured
 from django.core.mail.backends.base import BaseEmailBackend
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from openpyxl import Workbook
 
 from accounts.models import Role, User
 from core.models import AppSettings, EmailSettings
 
-from . import assignment, contacts, followups, lifecycle
+from . import assignment, contacts, followups, jobs, lifecycle
 from .columns import CONTACT_COLUMNS, COLUMNS, REQUIRED
 from .models import (
     AccountAssignment, AlertSummary, Application, Asset, CloudAccount, ContactImport, ContactImportRow, CveRecord, FollowUp,
     FollowUpEvent, ImportFile, ImportRun, Job, Notification, PlannedRemediation, Vulnerability,
 )
 from .notify import NotificationNotAllowed
-from .parsing import FileFormatError, normalize_account_id, normalize_provider, parse_file, to_datetime
+from .parsing import (
+    AmbiguousDate, FileFormatError, StreamParser, normalize_account_id, normalize_provider, parse_file, to_datetime,
+)
 from .queries import followup_cutoff, vulns_for_app
 from . import archive, queries, summaries
 
@@ -866,3 +873,304 @@ class ContactImportTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.app.refresh_from_db()
         self.assertEqual((self.app.app_id, self.app.name), ("APP-1", "Renamed"))
+
+
+def load_settings(**env):
+    """Evaluates settings.py as a real start would, with only the given DJANGO_ variables set."""
+    clean = {key: value for key, value in os.environ.items() if not key.startswith("DJANGO_")}
+    with mock.patch.dict(os.environ, {**clean, **env}, clear=True), mock.patch.object(sys, "argv", ["manage.py", "check"]):
+        return runpy.run_path(str(settings.BASE_DIR / "herald" / "settings.py"))
+
+
+class ProductionSettingsTests(SimpleTestCase):
+    REAL_KEY = "k3Jx9vQ2mZr7Lp4Wn8Ty1Bc6Hd5Fg0SaEuXoIqNtVyMwPbRjKl"
+
+    def test_refuses_missing_or_published_secret_key(self):
+        for env in ({}, {"DJANGO_SECRET_KEY": ""}, {"DJANGO_SECRET_KEY": "  "},
+                    {"DJANGO_SECRET_KEY": "change-me-in-production"}, {"DJANGO_SECRET_KEY": "dev-insecure-change-me"},
+                    {"DJANGO_SECRET_KEY": "replace-with-a-long-random-string"}):
+            with self.subTest(env=env), self.assertRaises(ImproperlyConfigured):
+                load_settings(**env)
+
+    def test_real_key_is_kept_and_debug_may_use_the_dev_key(self):
+        self.assertEqual(load_settings(DJANGO_SECRET_KEY=self.REAL_KEY)["SECRET_KEY"], self.REAL_KEY)
+        self.assertEqual(load_settings(DJANGO_DEBUG="1")["SECRET_KEY"], "dev-insecure-change-me")
+
+    def test_https_settings_default_off_for_plain_http_installs(self):
+        loaded = load_settings(DJANGO_SECRET_KEY=self.REAL_KEY)
+        self.assertNotIn("SECURE_PROXY_SSL_HEADER", loaded)
+        for name in ("SESSION_COOKIE_SECURE", "CSRF_COOKIE_SECURE", "SECURE_SSL_REDIRECT", "SECURE_HSTS_PRELOAD"):
+            self.assertFalse(loaded[name], name)
+        self.assertEqual(loaded["SECURE_HSTS_SECONDS"], 0)
+
+    def test_https_settings_come_from_the_environment(self):
+        loaded = load_settings(
+            DJANGO_SECRET_KEY=self.REAL_KEY, DJANGO_SECURE_PROXY_SSL_HEADER="1", DJANGO_SESSION_COOKIE_SECURE="1",
+            DJANGO_CSRF_COOKIE_SECURE="1", DJANGO_SECURE_SSL_REDIRECT="1", DJANGO_SECURE_HSTS_SECONDS="3600",
+        )
+        self.assertEqual(loaded["SECURE_PROXY_SSL_HEADER"], ("HTTP_X_FORWARDED_PROTO", "https"))
+        self.assertTrue(loaded["SESSION_COOKIE_SECURE"] and loaded["CSRF_COOKIE_SECURE"] and loaded["SECURE_SSL_REDIRECT"])
+        self.assertEqual(loaded["SECURE_HSTS_SECONDS"], 3600)
+
+    def test_ssl_redirect_without_the_proxy_header_would_loop(self):
+        with self.assertRaises(ImproperlyConfigured):
+            load_settings(DJANGO_SECRET_KEY=self.REAL_KEY, DJANGO_SECURE_SSL_REDIRECT="1")
+
+
+class WebSecurityTests(TestCase):
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+        self.client.force_login(self.admin)
+
+    def vuln_with_link(self, link, cve="CVE-2026-1"):
+        return Vulnerability(cve_ref=CveRecord(cve=cve, link=link))
+
+    def test_cve_url_only_allows_http_and_https(self):
+        nvd = "https://nvd.nist.gov/vuln/detail/CVE-2026-1"
+        for link in ("javascript:alert(1)", "JaVaScRiPt:alert(1)", " javascript:alert(1)", "java\tscript:alert(1)",
+                     "data:text/html,<script>alert(1)</script>", "vbscript:x", "//evil.example/x", "https:evil", "http://[bad"):
+            with self.subTest(link=link):
+                self.assertEqual(self.vuln_with_link(link).cve_url, nvd)
+        self.assertEqual(self.vuln_with_link("javascript:alert(1)", cve="GHSA-1").cve_url, "")
+        for link in ("https://example.com/advisory?id=1", "http://example.com/a"):
+            self.assertEqual(self.vuln_with_link(link).cve_url, link)
+
+    def test_scanner_script_link_never_reaches_the_page_or_email(self):
+        headers = HEADERS + ["CVE Link"]
+        finish_import(self.admin, csv_file([row("A1", app="APP-1") + ["javascript:alert(1)"]], headers=headers))
+        app = Application.objects.get(app_id="APP-1")
+        Application.objects.filter(pk=app.pk).update(support_emails="team@example.com")
+        self.assertNotContains(self.client.get("/applications/APP-1/"), "javascript:alert")
+        followups.notify_support(Application.objects.get(pk=app.pk), self.admin)
+        self.assertNotIn("javascript:alert", mail.outbox[0].alternatives[0][0])
+
+    def test_app_form_cancel_ignores_unsafe_next(self):
+        for target in ("javascript:alert(1)", "//evil.example/", "https://evil.example/"):
+            response = self.client.get("/applications/new/", {"next": target})
+            self.assertNotContains(response, target.split(":")[-1] if target.startswith("javascript") else "evil.example")
+        response = self.client.get("/applications/new/", {"next": "/cloud-accounts/?state=all"})
+        self.assertContains(response, 'href="/cloud-accounts/?state=all"')
+
+    def test_assign_confirm_cancel_ignores_unsafe_next(self):
+        finish_import(self.admin, csv_file([row("A1", app="APP-1")]))
+        data = {
+            "account_ids": CloudAccount.objects.get().pk, "application": Application.objects.get(app_id="APP-1").pk,
+            "next": "javascript:alert(1)",
+        }
+        response = self.client.post("/cloud-accounts/assign/", data)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "javascript:")
+        self.assertContains(response, 'href="/cloud-accounts/"')
+
+    def test_password_reset_link_uses_https_behind_a_proxy(self):
+        proxy = {"x-forwarded-proto": "https", "host": "herald.example.com"}
+        with override_settings(SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"), ALLOWED_HOSTS=["herald.example.com"]):
+            self.client.post("/password/forgot/", {"email": self.admin.email}, headers=proxy)
+        self.assertIn("https://herald.example.com/password/reset/", mail.outbox[0].body)
+
+    def test_forwarded_proto_is_ignored_unless_enabled(self):
+        self.client.post("/password/forgot/", {"email": self.admin.email}, headers={"x-forwarded-proto": "https"})
+        self.assertIn("http://testserver/password/reset/", mail.outbox[0].body)
+
+
+class SlashIdTests(TestCase):
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+        self.client.force_login(self.admin)
+
+    def test_app_or_account_id_with_slash_is_rejected(self):
+        f = csv_file([row("A1", app="APP/1"), row("A2", account="111/222"), row("A3", app="APP-3")])
+        result = parse_file(f, f.name)
+        self.assertEqual([r["alert_id"] for r in result.rows], ["A3"])
+        self.assertIn("App ID: 'APP/1' can't contain '/'", result.errors[0]["reason"])
+        self.assertIn("Account ID: '111/222' can't contain '/'", result.errors[1]["reason"])
+        self.assertEqual(result.errors[1]["account_id"], "")  # as with other unreadable accounts, protects by asset
+
+    def test_rejected_slash_row_blocks_remediation_on_its_asset(self):
+        finish_import(self.admin, csv_file([row("A1", scan="2026-09-01"), row("A2", scan="2026-09-01")]))
+        finish_import(self.admin, csv_file([row("A1", scan="2026-10-01"), row("A9", scan="2026-10-01", app="BAD/ID")]))
+        self.assertEqual(Vulnerability.objects.get(alert_id="A2").status, Vulnerability.OPEN)
+
+    def test_pages_survive_stored_ids_with_slash(self):
+        finish_import(self.admin, csv_file([
+            row("A1", app="GOOD-1"), row("A2", app="GOOD-2", asset="asset-2"), row("B1", app="GOOD-1", account=AWS_B),
+        ]))
+        Application.objects.filter(app_id="GOOD-2").update(app_id="BAD/2", support_emails="")
+        Vulnerability.objects.filter(alert_id="A2").update(app_id="BAD/2", owner_app_id="BAD/2")
+        CloudAccount.objects.filter(account_id=AWS_B).update(account_id="222/222", suggested_app_id="BAD/2")
+        CloudAccount.objects.filter(account_id=AWS_A).update(application=Application.objects.get(app_id="BAD/2"))
+        Notification.objects.create(app_id="BAD/2", kind=Notification.SUPPORT, recipients="a@example.com", subject="x")
+        summaries.refresh()
+        for url in ("/", "/applications/", "/applications/?status=with_vulns", "/cloud-accounts/?state=all",
+                    f"/cloud-accounts/{AWS_A}/", "/applications/GOOD-1/", "/notifications/"):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertContains(self.client.get("/applications/"), "BAD/2")
+
+    def test_bulk_notify_skips_a_stored_id_with_slash(self):
+        finish_import(self.admin, csv_file([row("A1", app="GOOD-1"), row("A2", app="GOOD-2", asset="asset-2")]))
+        Application.objects.update(support_emails="team@example.com")
+        Application.objects.filter(app_id="GOOD-2").update(app_id="BAD/2")
+        Vulnerability.objects.filter(alert_id="A2").update(app_id="BAD/2", owner_app_id="BAD/2")
+        result = followups.notify_many({"app_ids": ["BAD/2", "GOOD-1"]}, self.admin)
+        self.assertEqual(result, "Sent 1, failed 0, skipped 1.")
+
+
+@override_settings(HERALD_JOBS_EAGER=False)
+class CrashedParseJobTests(TestCase):
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+        self.run_obj = lifecycle.get_or_create_draft(self.admin)
+
+    def crash_twice(self):
+        """What a worker killed mid-file leaves behind on its second attempt."""
+        import_file = lifecycle.add_file(self.run_obj, csv_file([row("A1"), row("A2")]), self.admin)
+        job = Job.objects.get(kind=jobs.PARSE)
+        Job.objects.filter(pk=job.pk).update(status=Job.RUNNING, attempts=jobs.MAX_ATTEMPTS)
+        ImportFile.objects.filter(pk=import_file.pk).update(status=ImportFile.PROCESSING, accepted=2, duplicates=1)
+        jobs.recover()
+        import_file.refresh_from_db()
+        return import_file, job
+
+    def test_file_is_failed_and_upload_removed(self):
+        import_file, job = self.crash_twice()
+        stored = os.path.join(settings.HERALD_UPLOAD_DIR, f"import-{import_file.pk}.csv")
+        self.assertEqual(import_file.status, ImportFile.FAILED)
+        self.assertIn("stopped twice", import_file.error)
+        self.assertEqual(import_file.stored_path, "")
+        self.assertFalse(os.path.exists(stored))
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.FAILED)
+
+    def test_run_counts_are_refreshed_and_preview_is_queued(self):
+        import_file, _ = self.crash_twice()
+        self.run_obj.refresh_from_db()
+        self.assertEqual((import_file.accepted, import_file.duplicates), (0, 0))
+        self.assertEqual((self.run_obj.unique_rows, self.run_obj.duplicates_count), (0, 0))
+        self.assertEqual(self.run_obj.phase, "planning")
+        self.assertTrue(Job.objects.filter(kind=jobs.PLAN, status=Job.QUEUED).exists())
+
+    def test_draft_can_be_discarded_or_finalized_afterwards(self):
+        self.crash_twice()
+        self.run_obj.refresh_from_db()
+        lifecycle.build_plan(self.run_obj)
+        self.run_obj.refresh_from_db()
+        self.assertFalse(self.run_obj.is_busy)
+        self.assertTrue(self.run_obj.plan["protect_all"])  # a failed file still blocks every remediation
+        lifecycle.discard(self.run_obj)
+        self.run_obj.refresh_from_db()
+        self.assertEqual(self.run_obj.status, ImportRun.DISCARDED)
+
+
+class DateOrderTests(TestCase):
+    HEADERS = ["Alert ID", "Account ID", "Account Name", "Asset ID", "Alert Opened", "Last Scan"]
+
+    def setUp(self):
+        Role.ensure_defaults()
+        AppSettings.load()
+        self.admin = User.objects.create_superuser("admin@example.com", "pw-Example-123")
+
+    def dated(self, *pairs):
+        return csv_file(
+            [[f"A{n}", AWS_A, "prod", "asset-1", opened, scan] for n, (opened, scan) in enumerate(pairs)], headers=self.HEADERS
+        )
+
+    def parse(self, *pairs, **kwargs):
+        f = self.dated(*pairs)
+        parser = StreamParser(f, f.name, **kwargs)
+        accepted, rejected = [], []
+        for records, errors in parser.batches():
+            accepted += records
+            rejected += errors
+        return accepted, rejected
+
+    def test_ambiguous_date_is_not_guessed_alone(self):
+        with self.assertRaises(AmbiguousDate):
+            to_datetime("11/05/2026", "d")
+        self.assertEqual(to_datetime("11/05/2026", "d", day_first=True).month, 5)
+        self.assertEqual(to_datetime("11/05/2026", "d", day_first=False).month, 11)
+        self.assertEqual(to_datetime("05/05/2026", "d").day, 5)  # the same either way
+
+    def test_day_first_file_is_detected_from_a_later_row(self):
+        accepted, rejected = self.parse(("11/05/2026", "11/05/2026"), ("25/05/2026", "25/05/2026"))
+        self.assertEqual(rejected, [])
+        self.assertTrue(accepted[0]["last_scan"].startswith("2026-05-11"))
+
+    def test_month_first_file_is_detected_from_a_later_row(self):
+        accepted, rejected = self.parse(("11/05/2026 10:30:00 AM", "11/05/2026"), ("05/25/2026", "05/25/2026"))
+        self.assertEqual(rejected, [])
+        self.assertTrue(accepted[0]["last_scan"].startswith("2026-11-05"))
+        self.assertTrue(accepted[0]["alert_opened"].startswith("2026-11-05T10:30"))
+
+    def test_row_that_contradicts_the_file_order_is_rejected(self):
+        accepted, rejected = self.parse(("25/05/2026", "25/05/2026"), ("05/25/2026", "05/25/2026"), ("11/05/2026", "11/05/2026"))
+        self.assertEqual(len(accepted), 2)
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("doesn't match this file's day/month/year", rejected[0]["reason"])
+        self.assertTrue(accepted[1]["last_scan"].startswith("2026-05-11"))
+
+    def test_file_that_cannot_be_settled_is_refused(self):
+        f = self.dated(("11/05/2026", "11/05/2026"), ("03/04/2026", "03/04/2026"))
+        with self.assertRaisesMessage(FileFormatError, "could be day/month or month/day"):
+            parse_file(f, f.name)
+
+    def test_chosen_order_settles_an_ambiguous_file(self):
+        accepted, _ = self.parse(("11/05/2026", "11/05/2026"), date_order="mdy")
+        self.assertTrue(accepted[0]["last_scan"].startswith("2026-11-05"))
+        accepted, _ = self.parse(("11/05/2026", "11/05/2026"), date_order="dmy")
+        self.assertTrue(accepted[0]["last_scan"].startswith("2026-05-11"))
+
+    def test_iso_and_excel_cells_are_never_ambiguous(self):
+        workbook = Workbook()
+        workbook.active.append(self.HEADERS)
+        workbook.active.append(["A1", AWS_A, "prod", "asset-1", datetime(2026, 5, 11), "2026-05-11"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        result = parse_file(io.BytesIO(buffer.getvalue()), "scan.xlsx")
+        self.assertEqual(result.errors, [])
+        self.assertTrue(result.rows[0]["alert_opened"].startswith("2026-05-11"))
+        self.assertTrue(result.rows[0]["last_scan"].startswith("2026-05-11"))
+
+    def test_text_dates_in_excel_are_detected_too(self):
+        workbook = Workbook()
+        workbook.active.append(self.HEADERS)
+        workbook.active.append(["A1", AWS_A, "prod", "asset-1", "11/05/2026", "11/05/2026"])
+        workbook.active.append(["A2", AWS_A, "prod", "asset-1", "05/25/2026", "05/25/2026"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        result = parse_file(io.BytesIO(buffer.getvalue()), "scan.xlsx")
+        self.assertEqual(result.errors, [])
+        self.assertTrue(result.rows[0]["last_scan"].startswith("2026-11-05"))
+
+    def test_detection_keeps_the_read_position_in_a_large_file(self):
+        rows = [(f"{(n % 12) + 1:02d}/05/2026", "2026-05-01") for n in range(30000)] + [("25/05/2026", "2026-05-01")]
+        accepted, rejected = self.parse(*rows)
+        self.assertEqual((len(accepted), rejected), (30001, []))
+        self.assertEqual([r["alert_id"] for r in accepted[:2]], ["A0", "A1"])
+        self.assertEqual(accepted[-1]["alert_id"], "A30000")
+
+    def test_refused_file_stages_nothing_and_blocks_remediation(self):
+        finish_import(self.admin, csv_file([row("A1", scan="2026-09-01"), row("A2", scan="2026-09-01")]))
+        run = lifecycle.get_or_create_draft(self.admin)
+        lifecycle.add_file(run, csv_file([row("A1", scan="2026-10-01"), row("A3", scan="11/10/2026")]), self.admin)
+        import_file = run.files.get()
+        run.refresh_from_db()
+        self.assertEqual(import_file.status, ImportFile.FAILED)
+        self.assertEqual((import_file.accepted, run.unique_rows), (0, 0))
+        self.assertTrue(run.plan["protect_all"])
+        self.assertEqual(run.plan["remediated"], 0)
+
+    def test_upload_page_passes_the_chosen_order(self):
+        self.client.force_login(self.admin)
+        f = csv_file([row("A1", scan="11/05/2026")])
+        response = self.client.post("/imports/", {"file": f, "date_order": "mdy"})
+        self.assertEqual(response.status_code, 302)
+        import_file = ImportFile.objects.get()
+        self.assertEqual((import_file.date_order, import_file.status), ("mdy", ImportFile.DONE))
+        self.assertContains(self.client.get("/imports/"), "Date order for text dates")

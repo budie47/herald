@@ -11,7 +11,7 @@
   <div class="col-lg-4"><div class="card h-100"><div class="card-body">
     <h2 class="h6">Assigned App ID</h2>
     <p class="small text-muted">{{ summary.untagged }} open alert{{ summary.untagged|pluralize }} here {{ summary.untagged|pluralize:"has,have" }} no App ID and follow{{ summary.untagged|pluralize:"s," }} this assignment.</p>
-    {% if account.application %}<p class="small mb-2">Currently <a href="{% url 'app_detail' account.application.app_id %}">{{ account.application.app_id }}</a>{% if account.application.name %} · {{ account.application.name }}{% endif %}</p>{% endif %}
+    {% if account.application %}<p class="small mb-2">Currently {% url 'app_detail' account.application.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ account.application.app_id }}</a>{% else %}{{ account.application.app_id }}{% endif %}{% if account.application.name %} · {{ account.application.name }}{% endif %}</p>{% endif %}
     <form method="post" action="{% url 'account_assign' %}" class="d-flex gap-2 align-items-start" id="assign-form">{% csrf_token %}
       <input type="hidden" name="account_ids" value="{{ account.pk }}"><input type="hidden" name="next" value="{{ request.get_full_path }}">
       <div class="flex-grow-1" style="min-width: 0">{% if account.application %}{% include "vulns/_app_picker.html" with account_pk=account.pk allow_clear=True placeholder="Change App ID…" %}{% else %}{% include "vulns/_app_picker.html" with account_pk=account.pk %}{% endif %}</div>
@@ -28,7 +28,7 @@
     </div>
     <div>{% for sev, n in severity_counts %}<span class="sev {{ sev|sev_class }}">{{ n }} {{ sev }}</span> {% endfor %}</div>
     <h3 class="h6 mt-3">Open by App ID</h3>
-    {% for row in breakdown|slice:":15" %}<div class="d-flex justify-content-between small">{% if row.app_id %}<a href="{% url 'app_detail' row.app_id %}">{{ row.app_id }}</a>{% else %}<span class="badge text-bg-warning">Unassigned</span>{% endif %}<span>{{ row.n }}</span></div>{% empty %}<p class="small text-muted mb-0">No open alerts.</p>{% endfor %}
+    {% for row in breakdown|slice:":15" %}<div class="d-flex justify-content-between small">{% if row.app_id %}{% url 'app_detail' row.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ row.app_id }}</a>{% else %}{{ row.app_id }}{% endif %}{% else %}<span class="badge text-bg-warning">Unassigned</span>{% endif %}<span>{{ row.n }}</span></div>{% empty %}<p class="small text-muted mb-0">No open alerts.</p>{% endfor %}
   </div></div></div>
   <div class="col-lg-4"><div class="card h-100"><div class="card-body">
     <h2 class="h6">Assignment history</h2>

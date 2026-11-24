@@ -116,7 +116,7 @@ class Command(BaseCommand):
                 second = [r for r in rows if rng.random() < .8] if in_second else []
                 if in_second:
                     second += [new_row(account, asset_no, scans[1]) for _ in range(rng.randint(0, 2))]
-                    output[1] += [{**r, "Last Scan": scans[1].strftime("%d/%m/%Y %H:%M")} for r in second]
+                    output[1] += [{**r, "Last Scan": scans[1].strftime("%d-%b-%Y %H:%M:%S")} for r in second]
                 if in_third:
                     kept = [r for r in second if rng.random() < .85]
                     returned = [r for r in rows if r not in second and rng.random() < .35]  # reopened

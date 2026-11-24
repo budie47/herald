@@ -15,6 +15,9 @@
     <form method="post" enctype="multipart/form-data">{% csrf_token %}
       {{ form.file }}
       <div class="form-text mb-2">CSV (.csv) or Excel (.xlsx, .xlsm), up to 512 MB per file. For Excel the first worksheet is read. The header row can start on any row.</div>
+      <label class="form-label small mb-0" for="{{ form.date_order.id_for_label }}">Date order for text dates</label>
+      {{ form.date_order }}
+      <div class="form-text mb-2">Herald works this out from the file. If every date could be read either way, such as 11/05/2026, the file is refused until you choose.</div>
       <div class="d-flex align-items-center gap-3 flex-wrap">
         <button class="btn btn-primary"><i class="bi bi-cloud-upload"></i> Upload</button>
         <span class="small text-muted">Blank template:

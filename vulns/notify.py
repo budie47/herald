@@ -100,6 +100,8 @@ def send_app_notification(app, user, kind, to, cc=(), follow_up=None, remark="",
     """Emails the open vulnerabilities and logs the attempt, whether it worked or not."""
     if app is None:
         raise NotificationNotAllowed("This App ID is not registered.")
+    if "/" in app.app_id:  # older imports could store one; its email links and follow-up page can't work
+        raise NotificationNotAllowed(f"{app.app_id} contains '/'. Correct the App ID in the scan data first.")
     if not to:
         raise NotificationNotAllowed(f"{app.app_id} has no email for this notification.")
 

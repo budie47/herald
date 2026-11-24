@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timezone as dt_timezone
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.db import models
@@ -11,6 +12,18 @@ from .columns import CONTACT_FIELDS, CONTACT_LABELS, OTHER_SEVERITY_RANK
 
 def split_emails(value):
     return [e for e in re.split(r"[,;\s]+", value or "") if e]
+
+
+def safe_web_url(value):
+    """A scanner-supplied link, only if it is a plain http(s) URL, so it can't run as a script from an href."""
+    text = (value or "").strip()
+    if re.search(r"[\x00-\x20\x7f\\]", text):
+        return ""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return ""
+    return text if parts.scheme.lower() in ("http", "https") and parts.netloc else ""
 
 
 def unique_emails(emails, exclude=()):
@@ -172,6 +185,9 @@ class ImportRun(models.Model):
 class ImportFile(models.Model):
     QUEUED, PROCESSING, DONE, FAILED = "queued", "processing", "done", "failed"
     STATUS_CHOICES = [(QUEUED, "Queued"), (PROCESSING, "Reading"), (DONE, "Done"), (FAILED, "Failed")]
+    DATE_ORDER_CHOICES = [
+        ("", "Detect from the file"), ("dmy", "Day first (31/12/2026)"), ("mdy", "Month first (12/31/2026)"),
+    ]
 
     run = models.ForeignKey(ImportRun, on_delete=models.CASCADE, related_name="files")
     filename = models.CharField(max_length=255)
@@ -188,6 +204,7 @@ class ImportFile(models.Model):
     duplicates = models.PositiveIntegerField(default=0)
     unknown_columns = models.JSONField(default=list, blank=True)
     missing_columns = models.JSONField(default=list, blank=True)
+    date_order = models.CharField(max_length=3, choices=DATE_ORDER_CHOICES, blank=True, default="")
 
     class Meta:
         ordering = ["id"]
@@ -454,8 +471,9 @@ class Vulnerability(models.Model):
 
     @property
     def cve_url(self):
-        if self.cve_link:
-            return self.cve_link
+        link = safe_web_url(self.cve_link)
+        if link:
+            return link
         if self.cve.upper().startswith("CVE-"):
             return f"https://nvd.nist.gov/vuln/detail/{self.cve}"
         return ""

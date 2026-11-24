@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Stop with the real error if the settings are unusable, such as a placeholder secret key.
+python -c "import herald.settings"
+
 python - <<'PY'
 import os, sys, time
 import psycopg

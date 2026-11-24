@@ -27,7 +27,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-herald}
       POSTGRES_USER: ${POSTGRES_USER:-herald}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-herald}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -47,18 +47,27 @@ services:
       - uploads:/data/uploads
     environment: &app-env
       HERALD_UPLOAD_DIR: /data/uploads
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-change-me-in-production}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env (see .env.example)}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
       DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       HERALD_SITE_URL: ${HERALD_SITE_URL:-http://localhost:8000}
+      # Switch these on when Herald runs behind an HTTPS reverse proxy.
+      DJANGO_SECURE_PROXY_SSL_HEADER: ${DJANGO_SECURE_PROXY_SSL_HEADER:-0}
+      DJANGO_SESSION_COOKIE_SECURE: ${DJANGO_SESSION_COOKIE_SECURE:-0}
+      DJANGO_CSRF_COOKIE_SECURE: ${DJANGO_CSRF_COOKIE_SECURE:-0}
+      DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-0}
+      DJANGO_SECURE_HSTS_SECONDS: ${DJANGO_SECURE_HSTS_SECONDS:-0}
+      DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS: ${DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS:-0}
+      DJANGO_SECURE_HSTS_PRELOAD: ${DJANGO_SECURE_HSTS_PRELOAD:-0}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-herald}
       POSTGRES_USER: ${POSTGRES_USER:-herald}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-herald}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
       SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-admin@herald.local}
-      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-ChangeMe!2026}
+      # Only read while no superadmin exists, so an existing install can leave it empty.
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
       # Pre-fills Settings > Email on first start only (points at the bundled Mailpit).
       HERALD_SMTP_HOST: ${HERALD_SMTP_HOST:-mailpit}
       HERALD_SMTP_PORT: ${HERALD_SMTP_PORT:-1025}

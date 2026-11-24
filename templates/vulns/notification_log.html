@@ -19,7 +19,7 @@
     {% for n in page %}
       <tr>
         <td class="nowrap">{{ n.sent_at|date:"Y-m-d H:i:s" }}</td>
-        <td><a href="{% url 'app_detail' n.app_id %}">{{ n.app_id }}</a></td>
+        <td>{% url 'app_detail' n.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ n.app_id }}</a>{% else %}{{ n.app_id }}{% endif %}</td>
         <td class="nowrap">{{ n.get_kind_display }}</td>
         <td>{% if n.status == "sent" %}<span class="badge text-bg-success">sent</span>{% else %}<span class="badge text-bg-danger">failed</span>{% endif %}</td>
         <td class="nowrap">{% if n.follow_up %}#{{ n.follow_up_id }} <span class="badge {{ n.follow_up.status|followup_class }}">{{ n.follow_up.get_status_display }}</span>{% else %}—{% endif %}</td>

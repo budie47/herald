@@ -67,12 +67,13 @@ def get_or_create_draft(user):
         return ImportRun.objects.get(status=ImportRun.DRAFT)
 
 
-def add_file(run, uploaded, user):
+def add_file(run, uploaded, user, date_order=""):
     """Stores an upload and queues it. The worker reads it in the background."""
     upload_dir = settings.HERALD_UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
     import_file = ImportFile.objects.create(
-        run=run, filename=uploaded.name[:255], uploaded_by=user, status=ImportFile.QUEUED, size_bytes=uploaded.size
+        run=run, filename=uploaded.name[:255], uploaded_by=user, status=ImportFile.QUEUED, size_bytes=uploaded.size,
+        date_order=date_order,
     )
     extension = os.path.splitext(uploaded.name)[1].lower()
     path = os.path.join(upload_dir, f"import-{import_file.pk}{extension}")
@@ -204,7 +205,7 @@ def process_file(file_id):
     accepted = rejected = duplicates = 0
     try:
         with open(import_file.stored_path, "rb") as handle:
-            parser = StreamParser(handle, import_file.filename)
+            parser = StreamParser(handle, import_file.filename, import_file.date_order)
             ImportFile.objects.filter(pk=file_id).update(
                 header_row=parser.header_row, unknown_columns=parser.unknown_columns,
                 missing_columns=parser.missing_columns,
@@ -220,20 +221,40 @@ def process_file(file_id):
         ImportFile.objects.filter(pk=file_id).update(status=ImportFile.DONE)
         message = f"{import_file.filename}: {accepted} of {parser.rows_read} rows accepted."
     except FileFormatError as exc:
-        ImportFile.objects.filter(pk=file_id).update(status=ImportFile.FAILED, error=str(exc))
+        _mark_failed(file_id, str(exc))
         message = str(exc)
     except Exception as exc:
-        StagedAlert.objects.filter(file=import_file).delete()
-        ImportFile.objects.filter(pk=file_id).update(
-            status=ImportFile.FAILED, error=f"Could not finish reading this file: {exc}"
-        )
+        _mark_failed(file_id, f"Could not finish reading this file: {exc}")
         message = str(exc)
     _remove_stored(import_file)
     _refresh_run_counts(run)
+    _plan_when_all_read(run)
+    return message
+
+
+def fail_file(file_id, message):
+    """A parse job died. Its file must not stay in progress, or the draft could never be finalized or discarded."""
+    import_file = ImportFile.objects.select_related("run").filter(pk=file_id).first()
+    if import_file is None:
+        return
+    if import_file.status in (ImportFile.QUEUED, ImportFile.PROCESSING):
+        _mark_failed(file_id, f"Could not finish reading this file: {message}")
+    _remove_stored(import_file)
+    _refresh_run_counts(import_file.run)
+    if import_file.run.status == ImportRun.DRAFT:
+        _plan_when_all_read(import_file.run)
+
+
+def _mark_failed(file_id, error):
+    """A failed file keeps none of its rows, and blocks remediation for the whole import."""
+    StagedAlert.objects.filter(file_id=file_id).delete()
+    ImportFile.objects.filter(pk=file_id).update(status=ImportFile.FAILED, error=error, accepted=0, duplicates=0)
+
+
+def _plan_when_all_read(run):
     if not run.files.filter(status__in=[ImportFile.QUEUED, ImportFile.PROCESSING]).exists():
         ImportRun.objects.filter(pk=run.pk).update(phase="planning", plan_ready=False)
         jobs.enqueue(jobs.PLAN, {"run": run.pk})
-    return message
 
 
 def _remove_stored(import_file):
