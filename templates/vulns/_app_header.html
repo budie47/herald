@@ -1,0 +1,23 @@
+<a class="small" href="{% url 'app_list' %}">&larr; Applications</a>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ app_id }}{% if app.name %} <span class="text-muted fs-5">· {{ app.name }}</span>{% endif %}
+    {% if not app %}<span class="badge text-bg-warning fs-6 align-middle">unregistered</span>{% endif %}</h1>
+  {% if user.is_admin %}
+  <div class="d-flex gap-2">
+    {% if app %}
+      <span {% if not app.has_email %}title="Add a team email first"{% elif not summary.open %}title="No open {% if module == 'servers' %}server{% else %}container{% endif %} vulnerabilities"{% endif %}>
+        <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#send-modal" {% if not app.has_email or not summary.open %}disabled{% endif %}><i class="bi bi-envelope"></i> {% if follow_up %}Send reminder{% else %}Send to support{% endif %}</button>
+      </span>
+      <a class="btn btn-outline-secondary btn-sm" href="{% url 'app_edit' app_id %}"><i class="bi bi-pencil"></i> {% if app.has_contacts %}Edit{% else %}Add contacts{% endif %}</a>
+      <a class="btn btn-outline-danger btn-sm" href="{% url 'app_delete' app_id %}"><i class="bi bi-trash"></i> Delete</a>
+    {% else %}
+      <a class="btn btn-warning btn-sm" href="{% url 'app_create' %}?app_id={{ app_id|urlencode }}"><i class="bi bi-person-plus"></i> Register owner</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item"><a class="nav-link {% if module != 'servers' %}active{% endif %}" href="{% url 'app_detail' app_id %}"><i class="bi bi-box-seam"></i> Containers <span class="badge text-bg-light border">{{ tab_counts.containers }}</span></a></li>
+  <li class="nav-item"><a class="nav-link {% if module == 'servers' %}active{% endif %}" href="{% url 'app_servers' app_id %}"><i class="bi bi-hdd-rack"></i> Servers <span class="badge text-bg-light border">{{ tab_counts.servers }}</span></a></li>
+</ul>

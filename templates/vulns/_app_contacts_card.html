@@ -1,0 +1,17 @@
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Contacts</h2>
+    {% if app %}
+    <dl class="row small mb-0">
+      <dt class="col-5">Team name</dt><dd class="col-7">{{ app.support_team|default:"—" }}</dd>
+      <dt class="col-5">Team email</dt><dd class="col-7">{% if app.has_email %}{{ app.support_email_list|join:", " }}{% else %}<span class="badge text-bg-warning">Not set</span>{% endif %}</dd>
+      <dt class="col-5">Owner name</dt><dd class="col-7">{{ app.owner_name|default:"—" }}</dd>
+      <dt class="col-5">Owner email</dt><dd class="col-7">{{ app.owner_email|default:"—" }}</dd>
+      <dt class="col-5">Additional emails</dt><dd class="col-7">{{ app.extra_email_list|join:", "|default:"—" }}</dd>
+      <dt class="col-5">Business service</dt><dd class="col-7">{{ app.business_service|default:"—" }}</dd>
+      <dt class="col-5">Department</dt><dd class="col-7">{{ app.department|default:"—" }}</dd>
+      {% if app.notes %}<dt class="col-5">Notes</dt><dd class="col-7">{{ app.notes|linebreaksbr }}</dd>{% endif %}
+    </dl>
+    {% else %}
+    <p class="small text-muted mb-0">This App ID appears in scan data but has no registered owner, so notifications can't be sent.</p>
+    {% endif %}
+  </div></div></div>

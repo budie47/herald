@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Upload server vulnerabilities{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Upload Data <span class="fs-6 text-muted">· Server vulnerabilities</span></h1>
+<div class="row g-3 mb-3">
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body">
+    {% if draft %}
+      <h2 class="h6">Server import #{{ draft.pk }} is in progress</h2>
+      <p class="small">Only one draft can exist at a time. New files are added to it.</p>
+      <a class="btn btn-warning btn-sm mb-3" href="{% url 'server_import_detail' draft.pk %}">Open draft import #{{ draft.pk }}</a>
+      <h2 class="h6">Add a file to import #{{ draft.pk }}</h2>
+    {% else %}
+      <h2 class="h6">Start a new server import</h2>
+    {% endif %}
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.file }}
+      <div class="form-text mb-2">An <strong>MFS12</strong> report, or a <strong>Qualys</strong> report. Herald tells them apart from their columns. CSV (.csv) or Excel (.xlsx, .xlsm), up to 512 MB per file.</div>
+      <label class="form-label small mb-0" for="{{ form.date_order.id_for_label }}">Date order for text dates</label>
+      {{ form.date_order }}
+      <div class="form-text mb-2">MFS12 exports dates month first, such as 1/8/2026 8:00:00 AM. Herald works this out from the file, and asks you to choose only when every date could be read either way.</div>
+      <button class="btn btn-primary"><i class="bi bi-cloud-upload"></i> Upload</button>
+    </form>
+  </div></div></div>
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body small">
+    <h2 class="h6">How server imports work</h2>
+    <ol class="ps-3">
+      <li>Upload the whole <strong>MFS12</strong> export. Batches are fine. Add the <strong>Qualys</strong> report too if you want Solution and Results in Herald. Files wait in a <strong>draft</strong>; live data does not change.</li>
+      <li>Enter the <strong>Power BI total</strong> of MFS12 rows, so Herald can confirm every batch is in.</li>
+      <li><strong>Review &amp; finalize</strong> shows exactly what will change, then applies it. Or discard it.</li>
+    </ol>
+    <p>A vulnerability is one <strong>server + QID</strong>. Server names are matched to CMDB ignoring capitals: the exact name, then the FQDN, then the short name if only one CMDB server has it. Other servers are listed as <strong>unassigned</strong>.</p>
+    <p>MFS12 is treated as the <strong>complete current list</strong>. When you finalize, an open vulnerability missing from it is marked <strong>remediated</strong>, including those of servers missing from the upload. So upload every batch, unfiltered. A failed file or unreadable row stops remediation where it could be wrong.</p>
+    <details>
+      <summary>MFS12 columns — <em>Asset Name</em>, <em>QID</em> and <em>Severity</em> are required</summary>
+      <div class="row row-cols-2 row-cols-md-3 g-1 mt-1">{% for label, key, kind in mfs12_columns %}<div class="col"><code>{{ label }}</code>{% if kind != "text" %} <span class="text-muted">({{ kind }})</span>{% endif %}</div>{% endfor %}</div>
+    </details>
+    <details class="mt-1">
+      <summary>Qualys columns read — <em>Asset Name</em>, <em>QID</em> and <em>Solution</em> are required</summary>
+      <div class="row row-cols-2 row-cols-md-3 g-1 mt-1">{% for label, key, kind in qualys_columns %}<div class="col"><code>{{ label }}</code></div>{% endfor %}</div>
+      <p class="mt-2 mb-0 text-muted">Every other Qualys column is ignored. Results longer than 4,000 characters are shortened.</p>
+    </details>
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">Server import history</h2>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>Import</th><th>Status</th><th>Finalized (UTC)</th><th>By</th><th class="text-end">Files</th><th class="text-end">Servers</th><th class="text-end">New</th><th class="text-end">Still open</th><th class="text-end">Reopened</th><th class="text-end">Remediated</th></tr></thead>
+    <tbody>
+    {% for run in page %}
+      <tr>
+        <td><a href="{% url 'server_import_detail' run.pk %}">#{{ run.pk }}</a></td>
+        <td>{% if run.status == "finalized" %}<span class="badge text-bg-success">finalized</span>{% else %}<span class="badge text-bg-secondary">{{ run.status }}</span>{% endif %}</td>
+        <td class="nowrap">{{ run.finalized_at|date:"Y-m-d H:i"|default:"—" }}</td>
+        <td class="small">{{ run.finalized_by.email|default:"" }}</td>
+        <td class="text-end">{{ run.files_count }}</td>
+        <td class="text-end">{{ run.servers_count }}</td>
+        <td class="text-end">{{ run.new_count }}</td>
+        <td class="text-end">{{ run.updated_count }}</td>
+        <td class="text-end {% if run.reopened_count %}text-warning fw-semibold{% endif %}">{{ run.reopened_count }}</td>
+        <td class="text-end {% if run.remediated_count %}text-success fw-semibold{% endif %}">{{ run.remediated_count }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="10" class="text-muted">No server imports yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

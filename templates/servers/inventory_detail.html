@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% load humanize herald_tags %}
+{% block title %}CMDB import{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'inventory_home' %}">&larr; CMDB inventory</a>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0 text-break">{{ item.filename }}</h1>
+    <div class="small text-muted">
+      {% if item.status == "reading" %}Reading the file. This page updates by itself.
+      {% elif item.status == "applying" %}Applying. This page updates by itself.
+      {% elif item.is_preview %}Preview. No servers have been changed yet.
+      {% elif item.status == "failed" %}This file could not be read.
+      {% else %}Applied {{ item.applied_at|date:"Y-m-d H:i" }}{% if item.applied_by %} by {{ item.applied_by.email }}{% endif %}.{% endif %}</div>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    {% if item.rejected_count %}<a class="btn btn-outline-secondary btn-sm" href="{% url 'inventory_rejected' item.pk %}"><i class="bi bi-download"></i> Rejected rows</a>{% endif %}
+    {% if item.is_preview or item.status == "failed" %}
+    <form method="post" action="{% url 'inventory_discard' item.pk %}">{% csrf_token %}<button class="btn btn-outline-secondary btn-sm">Discard</button></form>
+    {% endif %}
+    {% if item.is_preview and item.change_count %}
+    <form method="post" action="{% url 'inventory_apply' item.pk %}">{% csrf_token %}
+      <button class="btn btn-primary btn-sm" onclick="return confirm('Save {{ item.change_count }} server change{{ item.change_count|pluralize }} from CMDB?')"><i class="bi bi-check-lg"></i> Apply {{ item.change_count|intcomma }} change{{ item.change_count|pluralize }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if item.is_busy %}<div class="alert alert-info py-2 small"><span class="spinner-border spinner-border-sm"></span> {% if item.status == "reading" %}Reading {{ item.filename }}.{% else %}Saving servers.{% endif %}</div>{% endif %}
+{% if item.error %}<div class="alert alert-danger py-2 small">{{ item.error }}</div>{% endif %}
+
+{% if item.status != "reading" and item.status != "failed" %}
+<div class="row g-3 mb-3">
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ item.new_count|intcomma }}</div><div class="small text-muted">new servers</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ item.updated_count|intcomma }}</div><div class="small text-muted">updated</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ item.unchanged_count|intcomma }}</div><div class="small text-muted">unchanged</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat {% if item.rejected_count %}text-danger{% endif %}">{{ item.rejected_count|intcomma }}</div><div class="small text-muted">rejected</div></div></div></div>
+  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body py-2"><div class="stat">{{ item.app_changed_count|intcomma }}</div><div class="small text-muted">get a different App ID</div></div></div></div>
+</div>
+
+{% if item.is_preview %}
+  {% if item.new_app_ids_count %}<div class="alert alert-info py-2 small"><i class="bi bi-info-circle"></i> <strong>{{ item.new_app_ids_count|intcomma }} App ID{{ item.new_app_ids_count|pluralize }} {{ item.new_app_ids_count|pluralize:"is,are" }} new to Herald.</strong> {{ item.new_app_ids_count|pluralize:"It,They" }} will be added to Applications without contacts. Add team emails before notifying.</div>{% endif %}
+  {% if item.not_in_file_count %}<div class="alert alert-light border py-2 small">{{ item.not_in_file_count|intcomma }} server{{ item.not_in_file_count|pluralize }} already in Herald {{ item.not_in_file_count|pluralize:"isn't,aren't" }} in this file. {{ item.not_in_file_count|pluralize:"It stays,They stay" }} as {{ item.not_in_file_count|pluralize:"it is,they are" }}.</div>{% endif %}
+{% elif item.status == "applied" and item.merged_count %}
+  <div class="alert alert-success py-2 small">{{ item.merged_count|intcomma }} server{{ item.merged_count|pluralize }} first found in a scan {{ item.merged_count|pluralize:"was,were" }} linked to {{ item.merged_count|pluralize:"its,their" }} CMDB record, with {{ item.merged_count|pluralize:"its,their" }} vulnerabilities.</div>
+{% endif %}
+{% if item.rejected_count %}<div class="alert alert-light border py-2 small">{{ item.rejected_count|intcomma }} rejected row{{ item.rejected_count|pluralize }} {{ item.rejected_count|pluralize:"is,are" }} not saved. Download {{ item.rejected_count|pluralize:"it,them" }} to see why.</div>{% endif %}
+{% if item.duplicate_count %}<div class="small text-muted mb-2">{{ item.duplicate_count|intcomma }} exact duplicate row{{ item.duplicate_count|pluralize }} counted once.</div>{% endif %}
+
+<div class="card"><div class="card-body">
+  <ul class="nav nav-pills nav-fill flex-column flex-md-row small mb-3">
+    {% for key, label, count in tabs %}
+    <li class="nav-item"><a class="nav-link py-1 {% if key == tab %}active{% endif %}" href="?show={{ key }}">{{ label }} ({{ count|intcomma }})</a></li>
+    {% endfor %}
+  </ul>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>Row</th><th>Server</th><th>Result</th><th>{% if tab == "rejected" %}Reason{% else %}Details{% endif %}</th></tr></thead>
+    <tbody>
+    {% for row in page %}
+      <tr>
+        <td class="text-muted">{{ row.row_number }}</td>
+        <td class="nowrap">{% if row.name %}{{ row.name|truncatechars:60 }}{% else %}<span class="text-muted">Missing</span>{% endif %}</td>
+        <td><span class="badge {% if row.action == 'rejected' %}text-bg-danger{% elif row.action == 'new' %}text-bg-primary{% elif row.action == 'updated' %}text-bg-info{% else %}text-bg-light border{% endif %}">{{ row.action|capfirst }}</span></td>
+        <td class="small">
+          {% if row.reason %}<div class="{% if row.action == 'rejected' %}text-danger{% else %}text-muted{% endif %}">{{ row.reason }}</div>{% endif %}
+          {% if row.summary %}<div>{{ row.summary }}</div>{% endif %}
+          {% for label, old, new in row.change_list %}
+          <div class="text-break"><strong>{{ label }}:</strong> {% if old %}<span class="text-muted text-decoration-line-through">{{ old|truncatechars:120 }}</span> &rarr; {% endif %}{% if new %}{{ new|truncatechars:120 }}{% else %}<span class="text-danger">cleared</span>{% endif %}</div>
+          {% endfor %}
+          {% if row.action == "unchanged" %}<span class="text-muted">Matches what Herald has.</span>{% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4" class="text-muted small">No rows here.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if item.is_busy %}<script>setInterval(() => location.reload(), 4000);</script>{% endif %}
+{% endblock %}

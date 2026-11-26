@@ -1,0 +1,54 @@
+<!doctype html>
+<html><body style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#212529">
+<div style="max-width:960px;margin:0 auto;background:#fff;border-radius:8px;padding:24px">
+  <h2 style="margin:0 0 4px">{{ app.app_id }}{% if app.name %} · {{ app.name }}{% endif %}</h2>
+  <p style="color:#6c757d;margin:0 0 16px">Open server vulnerabilities as of {{ sent_at|date:"Y-m-d H:i" }} UTC</p>
+  <p>Hello {{ greeting }},</p>
+  {% if is_escalation %}
+  <div style="border:2px solid #dc3545;border-radius:6px;padding:12px 16px;margin:0 0 12px">
+    <strong style="color:#dc3545">Escalation</strong><br>
+    {{ escalation.support_team }} was first notified on {{ escalation.first_notified|date:"Y-m-d" }}{% if escalation.reminders %} and received {{ escalation.reminders }} reminder{{ escalation.reminders|pluralize }}{% endif %}.
+    {% if escalation.responded %}This is being escalated after their response.{% elif escalation.earlier_response %}No new response has been recorded since their last reply.{% else %}No response has been recorded.{% endif %}<br>
+    Open vulnerabilities: <strong>{{ escalation.first_count }}</strong> at first notice, <strong>{{ total }}</strong> now.
+  </div>
+  {% elif is_reminder %}
+  <p><strong>Reminder:</strong> please review the vulnerabilities below and respond.</p>
+  {% endif %}
+  {% if remark %}<p style="background:#f3f4f6;border-radius:6px;padding:10px 14px"><strong>Remark:</strong> {{ remark|linebreaksbr }}</p>{% endif %}
+  <p>Herald has <strong>{{ total }}</strong> open server vulnerabilit{{ total|pluralize:"y,ies" }} on <strong>{{ server_count }}</strong> server{{ server_count|pluralize }} for your application.</p>
+  {% if kev %}
+  <div style="border:2px solid #7b1fa2;border-radius:6px;padding:10px 14px;margin:0 0 12px;color:#4a148c">
+    <strong>{{ kev }} actively exploited</strong> — {{ kev|pluralize:"this vulnerability is,these vulnerabilities are" }} on the CISA Known Exploited Vulnerabilities list. Please fix {{ kev|pluralize:"it,them" }} first.
+  </div>
+  {% endif %}
+  <table cellpadding="0" cellspacing="8" style="margin:0 -8px 12px"><tr>
+    {% for sev, n in severity_counts %}
+    <td style="padding:10px 16px;border-radius:6px;color:#fff;text-align:center;background:{% if sev == 'Critical' %}#7b1fa2{% elif sev == 'High' %}#d32f2f{% elif sev == 'Medium' %}#f57c00{% else %}#1976d2{% endif %}">
+      <div style="font-size:22px;font-weight:bold">{{ n }}</div><div style="font-size:12px">{{ sev }}</div></td>
+    {% endfor %}
+    <td style="padding:10px 16px;border-radius:6px;text-align:center;border:2px solid #dc3545;color:#dc3545">
+      <div style="font-size:22px;font-weight:bold">{{ past_slo }}</div><div style="font-size:12px">Past SLO</div></td>
+  </tr></table>
+  <p style="margin-bottom:4px"><strong>Servers</strong></p>
+  <ul style="margin-top:0">{% for name, environment, n in server_counts %}<li>{{ name }}{% if environment %} <span style="color:#6c757d">({{ environment }})</span>{% endif %}: {{ n }}</li>{% endfor %}{% if more_servers %}<li style="color:#6c757d">and {{ more_servers }} more server{{ more_servers|pluralize }}</li>{% endif %}</ul>
+  <p style="color:#6c757d">The {{ findings|length }} highest priority of {{ total }} open vulnerabilities are listed below, actively exploited first. {% if attached %}All of them are in the attached file.{% else %}The full list is too large to attach. <a href="{{ download_url }}">Sign in to download it</a>.{% endif %}</p>
+  <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
+    <tr style="background:#212529;color:#fff;text-align:left">
+      <th>Severity</th><th>QID</th><th>Title</th><th>Server</th><th>Env</th><th>Days open</th><th>SLO date</th>
+    </tr>
+    {% for f in findings %}
+    <tr style="border-bottom:1px solid #dee2e6">
+      <td>{{ f.severity }}{% if f.cisa_kev %}<br><strong style="color:#7b1fa2">KEV</strong>{% endif %}</td>
+      <td>{{ f.qid }}</td>
+      <td>{{ f.title }}</td>
+      <td>{{ f.server.name }}<br><span style="color:#6c757d">{{ f.server.ip_address }}</span></td>
+      <td>{{ f.server.environment }}</td>
+      <td style="text-align:right">{{ f.days_open }}</td>
+      <td style="white-space:nowrap;{% if f.slo_overdue %}color:#dc3545;font-weight:bold{% endif %}">{{ f.slo_date|date:"Y-m-d"|default:"—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p style="margin-top:20px"><a href="{{ view_url }}" style="background:#0d6efd;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;display:inline-block">View in Herald</a></p>
+  <p style="color:#6c757d;font-size:12px">Sent by Herald to {{ to|join:", " }}{% if cc %}, copied to {{ cc|join:", " }}{% endif %}.</p>
+</div>
+</body></html>

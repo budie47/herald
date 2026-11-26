@@ -1,0 +1,4 @@
+<ul class="nav nav-pills small">
+  <li class="nav-item"><a class="nav-link py-1 {% if module != 'servers' %}active{% endif %}" href="{% url 'dashboard' %}"><i class="bi bi-box-seam"></i> Containers</a></li>
+  <li class="nav-item"><a class="nav-link py-1 {% if module == 'servers' %}active{% endif %}" href="{% url 'dashboard_servers' %}"><i class="bi bi-hdd-rack"></i> Servers</a></li>
+</ul>

@@ -5,8 +5,16 @@ A failed email is logged but never changes a follow-up's status.
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Application, FollowUp, FollowUpEvent, Notification, unique_emails
+from .models import CONTAINERS, SERVERS, Application, FollowUp, FollowUpEvent, Notification, unique_emails
 from .notify import NotificationNotAllowed, send_app_notification
+
+
+def _sender(module):
+    if module == SERVERS:
+        from servers.notify import send_server_notification
+
+        return send_server_notification
+    return send_app_notification
 
 
 def _lock(follow_up):
@@ -26,8 +34,8 @@ def _event(follow_up, kind, user, remark="", include=False, notification=None, *
 
 
 @transaction.atomic
-def notify_support(app, user, remark="", include=False):
-    """Opens a follow-up, or sends a reminder on the one already open."""
+def notify_support(app, user, remark="", include=False, module=CONTAINERS):
+    """Opens a follow-up, or sends a reminder on the one already open for this module."""
     if app is None:
         raise NotificationNotAllowed("This App ID is not registered.")
     app = Application.objects.select_for_update().get(pk=app.pk)
@@ -35,22 +43,22 @@ def notify_support(app, user, remark="", include=False):
     if not support:
         raise NotificationNotAllowed(f"{app.app_id} has no team email. Add one to the application first.")
 
-    follow_up = FollowUp.objects.select_for_update().filter(application=app).exclude(status=FollowUp.CLOSED).first()
+    follow_up = (
+        FollowUp.objects.select_for_update().filter(application=app, module=module).exclude(status=FollowUp.CLOSED).first()
+    )
     if follow_up and follow_up.status == FollowUp.ESCALATED:
         to, cc = _owner_recipients(app)
     else:
         to, cc = support, unique_emails(app.extra_email_list(), exclude=support)
     kind = Notification.REMINDER if follow_up else Notification.SUPPORT
-    log = send_app_notification(
-        app, user, kind, to, cc, follow_up=follow_up, remark=remark if include else "",
-    )
+    log = _sender(module)(app, user, kind, to, cc, follow_up=follow_up, remark=remark if include else "")
     if log.status != Notification.SENT:
         return log
 
     now = timezone.now()
     if follow_up is None:
         follow_up = FollowUp.objects.create(
-            application=app, app_id=app.app_id, opened_at=now, opened_by=user, waiting_since=now,
+            application=app, app_id=app.app_id, module=module, opened_at=now, opened_by=user, waiting_since=now,
             first_vuln_count=log.vuln_count,
         )
         log.follow_up = follow_up
@@ -79,7 +87,7 @@ def escalate(follow_up, user, remark="", include=False):
     to, cc = _owner_recipients(app)
     if not to:
         raise NotificationNotAllowed(f"{app.app_id} has no application owner email. Add one to escalate.")
-    log = send_app_notification(
+    log = _sender(follow_up.module)(
         app, user, Notification.ESCALATION, to, cc, follow_up=follow_up, remark=remark if include else "",
         escalation={
             "first_notified": follow_up.opened_at,
@@ -145,11 +153,12 @@ def close_for_deleted_app(app, user):
 def notify_many(payload, user):
     """Bulk send from the Applications page, run by the worker. Every attempt is in the Notification log."""
     remark, include = payload.get("remark", ""), payload.get("include", False)
+    module = SERVERS if payload.get("module") == SERVERS else CONTAINERS
     apps = {a.app_id: a for a in Application.objects.filter(app_id__in=payload.get("app_ids", []))}
     sent, failed, skipped = 0, 0, 0
     for app_id in payload.get("app_ids", []):
         try:
-            log = notify_support(apps.get(app_id), user, remark, include)
+            log = notify_support(apps.get(app_id), user, remark, include, module)
         except NotificationNotAllowed:
             skipped += 1
             continue

@@ -19,13 +19,14 @@ from accounts.permissions import (
     account_assigner_required, admin_required, can_view_app, response_recorder_required,
 )
 from core.models import AppSettings
+from servers.queries import module_open_counts
 
 from . import assignment, contacts, followups, jobs, lifecycle
 from .columns import COLUMNS, SEVERITY_ORDER
 from .forms import ApplicationForm, ContactUploadForm, ResponseForm, UploadForm
 from .models import (
-    AlertSummary, Application, CloudAccount, ContactImport, ContactImportRow, FollowUp, FollowUpEvent, ImportRun, Job,
-    LegacyUpload, Notification, PlannedRemediation, Vulnerability,
+    CONTAINERS, MODULE_CHOICES, SERVERS, AlertSummary, Application, CloudAccount, ContactImport, ContactImportRow,
+    FollowUp, FollowUpEvent, ImportRun, Job, LegacyUpload, Notification, PlannedRemediation, Vulnerability,
 )
 from .notify import NotificationNotAllowed, stream_vulns_csv
 from .parsing import FileFormatError
@@ -100,7 +101,7 @@ def dashboard(request):
     )
     cfg = AppSettings.load()
     owned = len(finding_ids & contact_ids)
-    open_followups = scoped_followups(request.user).exclude(status=FollowUp.CLOSED)
+    open_followups = scoped_followups(request.user, CONTAINERS).exclude(status=FollowUp.CLOSED)
     context = {
         "followups_waiting": open_followups.filter(status=FollowUp.WAITING).count(),
         "followups_overdue": open_followups.filter(overdue_q(followup_cutoff())).count(),
@@ -133,7 +134,7 @@ def dashboard(request):
         "not_seen": totals["not_seen"],
         "not_seen_days": cfg.not_seen_days,
         "exceptions": totals["exceptions"],
-        "notifications_sent": scoped_notifications(request.user).filter(status=Notification.SENT).count(),
+        "notifications_sent": scoped_notifications(request.user, CONTAINERS).filter(status=Notification.SENT).count(),
         "recent_by_sev": [(s, int(recent_by_sev[s])) for s in SEVERITY_ORDER if recent_by_sev.get(s)],
         "top_apps": top,
         "last_import": ImportRun.objects.filter(status=ImportRun.FINALIZED).order_by("-finalized_at").first(),
@@ -335,6 +336,20 @@ def app_contacts_rejected(request, pk):
     return _download(content, "text/csv", f"herald_contacts_{pk}_rejected.csv")
 
 
+def followup_context(request, app, module):
+    """The open follow-up of one module, and that module's recent follow-up events."""
+    follow_up = app.follow_ups.filter(module=module).exclude(status=FollowUp.CLOSED).first()
+    if follow_up:
+        follow_up.overdue = follow_up.is_overdue(followup_cutoff())
+    events = list(
+        FollowUpEvent.objects.filter(follow_up__application=app, follow_up__module=module)
+        .select_related("actor", "notification", "follow_up")[:30]
+    )
+    for event in events:  # remarks and responses are internal unless sent in an email
+        event.show_note = request.user.can_record_responses or event.include_in_email
+    return follow_up, events
+
+
 def _detail_vulns(request, app_id):
     params = request.GET.copy()
     params.setdefault("status", "open")
@@ -364,14 +379,7 @@ def app_detail(request, app_id):
     follow_up = None
     follow_up_events = []
     if app:
-        follow_up = app.follow_ups.exclude(status=FollowUp.CLOSED).first()
-        if follow_up:
-            follow_up.overdue = follow_up.is_overdue(followup_cutoff())
-        follow_up_events = list(
-            FollowUpEvent.objects.filter(follow_up__application=app).select_related("actor", "notification", "follow_up")[:30]
-        )
-        for event in follow_up_events:  # remarks and responses are internal unless sent in an email
-            event.show_note = request.user.can_record_responses or event.include_in_email
+        follow_up, follow_up_events = followup_context(request, app, CONTAINERS)
     context = {
         "follow_up": follow_up,
         "follow_up_events": follow_up_events,
@@ -382,7 +390,10 @@ def app_detail(request, app_id):
         "app_id": app_id,
         "summary": summary,
         "severity_counts": [(s, summary[s.lower()]) for s in SEVERITY_ORDER],
-        "notifications": Notification.objects.filter(app_id=app_id).select_related("sent_by")[:10],
+        "notifications": Notification.objects.filter(app_id=app_id, module=CONTAINERS).select_related("sent_by")[:10],
+        "notify_url": reverse("app_notify", args=[app_id]),
+        "module": CONTAINERS,
+        "tab_counts": module_open_counts(app_id),
         "statuses": VULN_STATUSES,
         "severities": SEVERITY_ORDER,
         "environments": summary_environments(app_summary),
@@ -572,9 +583,14 @@ def notify_bulk(request):
         messages.warning(request, "Tick at least one application to notify.")
         return _back(request, "app_list")
     remark, include = _remark(request)
-    jobs.enqueue(jobs.NOTIFY, {"app_ids": app_ids, "remark": remark, "include": include}, request.user)
+    module = SERVERS if request.POST.get("module") == SERVERS else CONTAINERS
+    payload = {"app_ids": app_ids, "remark": remark, "include": include, "module": module}
+    jobs.enqueue(jobs.NOTIFY, payload, request.user)
+    noun = "server" if module == SERVERS else "container"
     messages.success(
-        request, f"Sending to the support teams of {len(app_ids)} application(s). Results appear in the Notification log."
+        request,
+        f"Sending {noun} vulnerabilities to the support teams of {len(app_ids)} application(s). "
+        "Results appear in the Notification log.",
     )
     return _back(request, "app_list")
 
@@ -642,7 +658,8 @@ def followup_close(request, pk):
 
 def _followup_back(follow_up):
     if follow_up.application_id:
-        return redirect(reverse("app_detail", args=[follow_up.application.app_id]) + "#follow-up")
+        page = "app_servers" if follow_up.is_servers else "app_detail"
+        return redirect(reverse(page, args=[follow_up.application.app_id]) + "#follow-up")
     return redirect("notification_log")
 
 
@@ -658,6 +675,8 @@ def notification_log(request):
         logs = logs.filter(status=request.GET["status"])
     if request.GET.get("kind") in dict(Notification.KIND_CHOICES):
         logs = logs.filter(kind=request.GET["kind"])
+    if request.GET.get("module") in dict(MODULE_CHOICES):
+        logs = logs.filter(module=request.GET["module"])
     followup = request.GET.get("followup")
     if followup == "overdue":
         logs = logs.filter(
@@ -669,6 +688,7 @@ def notification_log(request):
         **paginate(request, logs.select_related("follow_up")),
         "params": request.GET,
         "kinds": Notification.KIND_CHOICES,
+        "modules": MODULE_CHOICES,
         "followup_statuses": FollowUp.STATUS_CHOICES,
         "cutoff": followup_cutoff(),
     }

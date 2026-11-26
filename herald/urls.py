@@ -4,4 +4,5 @@ urlpatterns = [
     path("", include("accounts.urls")),
     path("", include("core.urls")),
     path("", include("vulns.urls")),
+    path("", include("servers.urls")),
 ]

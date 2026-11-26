@@ -1,0 +1,44 @@
+{% load herald_tags %}
+<form method="get" class="row g-2 mb-2">
+  <div class="col-md-3"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="QID, title, CVE{% if show_server %}, server or IP{% endif %}" aria-label="Search vulnerabilities"></div>
+  <div class="col-6 col-md-2"><select name="status" class="form-select form-select-sm" aria-label="Status">{% for v, l in statuses %}<option value="{{ v }}" {% if params.status == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
+  <div class="col-6 col-md-2"><select name="severity" class="form-select form-select-sm" aria-label="Severity"><option value="">All severities</option>{% for s in severities %}<option {% if params.severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
+  {% if environments %}<div class="col-6 col-md-2"><select name="env" class="form-select form-select-sm" aria-label="Environment"><option value="">All environments</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>{% endif %}
+  <div class="col-6 col-md-1"><select name="kev" class="form-select form-select-sm" aria-label="CISA KEV"><option value="">Any KEV</option><option value="yes" {% if params.kev == "yes" %}selected{% endif %}>KEV only</option></select></div>
+  <div class="col-6 col-md-1"><select name="slo" class="form-select form-select-sm" aria-label="SLO"><option value="">Any SLO</option><option value="past" {% if params.slo == "past" %}selected{% endif %}>Past SLO</option></select></div>
+  <input type="hidden" name="per_page" value="{{ per_page }}">
+  <div class="col-6 col-md-1 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{{ reset_url }}">Reset</a></div>
+</form>
+<div class="table-responsive">
+<table class="table table-sm table-hover align-middle mb-0 small">
+  <thead><tr><th>Severity</th><th>QID</th><th>Title</th>{% if show_server %}<th>Server</th><th>Environment</th>{% endif %}<th class="text-end">CVSS</th><th>First detected</th><th>Last detected</th><th class="text-end">Days open</th><th>SLO date</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for f in page %}
+    <tr>
+      <td class="nowrap"><span class="sev {{ f.severity|sev_class }}">{{ f.severity|default:"—" }}</span>{% if f.cisa_kev %} <span class="badge text-bg-dark" title="On the CISA Known Exploited Vulnerabilities list">KEV</span>{% endif %}</td>
+      <td class="font-monospace">{{ f.qid }}</td>
+      <td>
+        <details><summary>{{ f.title|default:"(no title)" }}{% if f.non_running_kernel %} <span class="badge text-bg-light border" title="Found in a kernel that isn't running">non-running kernel</span>{% endif %}</summary>
+          <div class="mt-1">
+            {% if f.cve_list %}<div><strong>CVEs:</strong> {% for c in f.cve_list %}<a href="https://nvd.nist.gov/vuln/detail/{{ c|urlencode }}" rel="noopener noreferrer" target="_blank">{{ c }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+            {% if f.ports %}<div><strong>Ports:</strong> {{ f.ports }}</div>{% endif %}
+            {% if f.cvss_vector %}<div><strong>CVSS vector:</strong> <span class="font-monospace">{{ f.cvss_vector }}</span></div>{% endif %}
+            {% if f.solution %}<div class="mt-1"><strong>Solution</strong><div style="white-space: pre-wrap">{{ f.solution }}</div></div>{% endif %}
+            {% if f.results %}<div class="mt-1"><strong>Results</strong><pre class="small bg-light p-2 mb-0" style="white-space: pre-wrap">{{ f.results }}</pre></div>{% endif %}
+            {% if not f.solution and not f.results %}<div class="text-muted">No Qualys details yet. Add a Qualys file to the next server import.</div>{% endif %}
+          </div>
+        </details>
+      </td>
+      {% if show_server %}<td class="nowrap"><a href="{% url 'server_detail' f.server_id %}">{{ f.server.name }}</a></td><td>{{ f.server.environment|default:"—" }}</td>{% endif %}
+      <td class="text-end">{{ f.cvss_score|default_if_none:"—" }}</td>
+      <td class="nowrap">{{ f.first_detected|date:"Y-m-d"|default:"—" }}</td>
+      <td class="nowrap">{{ f.last_detected|date:"Y-m-d"|default:"—" }}</td>
+      <td class="text-end">{{ f.days_open }}</td>
+      <td class="nowrap {% if f.slo_overdue %}text-overdue{% endif %}">{{ f.slo_date|date:"Y-m-d"|default:"—" }}</td>
+      <td class="nowrap"><span class="badge {{ f.display_status|status_class }}">{{ f.display_status }}</span>{% if f.remediated_at %}<div class="text-muted">{{ f.remediated_at|date:"Y-m-d" }}</div>{% endif %}</td>
+    </tr>
+  {% empty %}<tr><td colspan="{% if show_server %}11{% else %}9{% endif %}" class="text-muted">No vulnerabilities match.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+{% include "_pagination.html" %}

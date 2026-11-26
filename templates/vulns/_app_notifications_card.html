@@ -1,0 +1,17 @@
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Last 10 notifications</h2>
+    {% if notifications %}
+    <div class="timeline">
+      {% for n in notifications %}
+      <div class="timeline-item {% if n.status == 'failed' %}failed{% endif %}">
+        <div class="small fw-semibold">{{ n.sent_at|date:"Y-m-d H:i" }} UTC
+          <span class="badge text-bg-light border">{{ n.get_kind_display }}</span>
+          {% if n.status == 'failed' %}<span class="badge text-bg-danger">failed</span>{% endif %}</div>
+        <div class="small">by {{ n.sent_by.email|default:"(deleted user)" }} · {{ n.vuln_count }} vulnerabilit{{ n.vuln_count|pluralize:"y,ies" }}{% if n.past_slo_count %} ({{ n.past_slo_count }} past SLO){% endif %}</div>
+        <div class="small text-muted text-truncate" title="{{ n.recipients }}{% if n.cc %} / cc {{ n.cc }}{% endif %}">to {{ n.recipients }}{% if n.cc %} · cc {{ n.cc }}{% endif %}</div>
+        {% if n.error %}<div class="small text-danger">{{ n.error|truncatechars:120 }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="small text-muted mb-0">Never notified.</p>{% endif %}
+  </div></div></div>

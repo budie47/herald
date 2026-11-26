@@ -60,6 +60,18 @@
         {% if user.is_admin %}
         <li class="nav-item"><a class="nav-link {% active 'import_' %}" href="{% url 'import_home' %}"><i class="bi bi-cloud-upload"></i> Upload Data{% if draft_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a></li>
         {% endif %}
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% active 'server_' 'inventory_' %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-hdd-rack"></i> Servers{% if user.can_assign_accounts and unassigned_servers %} <span class="badge text-bg-warning">{{ unassigned_servers }}</span>{% endif %}{% if user.is_admin and draft_server_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="{% url 'server_list' %}">Servers</a></li>
+            {% if user.can_assign_accounts %}<li><a class="dropdown-item" href="{% url 'server_list' %}?state=unassigned">Unassigned servers{% if unassigned_servers %} <span class="badge text-bg-warning">{{ unassigned_servers }}</span>{% endif %}</a></li>{% endif %}
+            {% if user.is_admin %}
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="{% url 'server_import_home' %}">Upload MFS12 / Qualys{% if draft_server_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a></li>
+            <li><a class="dropdown-item" href="{% url 'inventory_home' %}">CMDB inventory</a></li>
+            {% endif %}
+          </ul>
+        </li>
         <li class="nav-item"><a class="nav-link {% active 'notification_' %}" href="{% url 'notification_log' %}"><i class="bi bi-envelope-paper"></i> Notification log</a></li>
         {% if user.is_admin %}
         <li class="nav-item"><a class="nav-link {% active 'settings' %}" href="{% url 'settings' %}"><i class="bi bi-gear"></i> Settings</a></li>
@@ -81,6 +93,12 @@
   <div class="alert alert-warning d-flex align-items-center justify-content-between py-2">
     <div><i class="bi bi-hourglass-split"></i> <strong>Import #{{ draft_import.pk }}</strong> is waiting to be finalized ({{ draft_import.files_count }} file{{ draft_import.files_count|pluralize }}). Live data has not changed yet.</div>
     {% if user.is_admin %}<a class="btn btn-sm btn-warning" href="{% url 'import_detail' draft_import.pk %}">Review &amp; finalize</a>{% endif %}
+  </div>
+  {% endif %}
+  {% if draft_server_import %}
+  <div class="alert alert-warning d-flex align-items-center justify-content-between py-2">
+    <div><i class="bi bi-hourglass-split"></i> <strong>Server import #{{ draft_server_import.pk }}</strong> is waiting to be finalized ({{ draft_server_import.files_count }} file{{ draft_server_import.files_count|pluralize }}). Live server data has not changed yet.</div>
+    {% if user.is_admin %}<a class="btn btn-sm btn-warning" href="{% url 'server_import_detail' draft_server_import.pk %}">Review &amp; finalize</a>{% endif %}
   </div>
   {% endif %}
   {% for message in messages %}

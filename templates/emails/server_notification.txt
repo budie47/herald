@@ -1,0 +1,29 @@
+{% autoescape off %}Hello {{ greeting }},
+{% if is_escalation %}
+ESCALATION: {{ escalation.support_team }} was first notified on {{ escalation.first_notified|date:"Y-m-d" }}{% if escalation.reminders %} and received {{ escalation.reminders }} reminder{{ escalation.reminders|pluralize }}{% endif %}.{% if escalation.responded %} This is being escalated after their response.{% elif escalation.earlier_response %} No new response has been recorded since their last reply.{% else %} No response has been recorded.{% endif %}
+Open vulnerabilities: {{ escalation.first_count }} at first notice, {{ total }} now.
+{% elif is_reminder %}
+This is a reminder. Please review the vulnerabilities below and respond.
+{% endif %}{% if remark %}
+Remark: {{ remark }}
+{% endif %}
+Herald has {{ total }} open server vulnerabilit{{ total|pluralize:"y,ies" }} on {{ server_count }} server{{ server_count|pluralize }} for {{ app.app_id }}{% if app.name %} ({{ app.name }}){% endif %}.
+{% if kev %}
+{{ kev }} of them {{ kev|pluralize:"is,are" }} on the CISA Known Exploited Vulnerabilities list: attackers are actively exploiting {{ kev|pluralize:"it,them" }}. Please fix {{ kev|pluralize:"it,these" }} first.
+{% endif %}
+Severity summary
+{% for sev, n in severity_counts %}  {{ sev }}: {{ n }}
+{% endfor %}  Past SLO date: {{ past_slo }}
+
+Servers
+{% for name, environment, n in server_counts %}  {{ name }}{% if environment %} ({{ environment }}){% endif %}: {{ n }}
+{% endfor %}{% if more_servers %}  ... and {{ more_servers }} more server{{ more_servers|pluralize }}
+{% endif %}
+The {{ findings|length }} highest priority vulnerabilit{{ findings|length|pluralize:"y is,ies are" }} listed below. {% if attached %}All {{ total }} open vulnerabilities are in the attached file.{% else %}The full list is too large to attach. Sign in to download it: {{ download_url }}{% endif %}
+
+{% for f in findings %}- [{{ f.severity }}{% if f.cisa_kev %}, KEV{% endif %}] QID {{ f.qid }}: {{ f.title }} | {{ f.server.name }}{% if f.server.environment %} ({{ f.server.environment }}){% endif %} | SLO {{ f.slo_date|date:"Y-m-d"|default:"-" }}{% if f.slo_overdue %} (PAST SLO){% endif %}
+{% endfor %}
+View in Herald: {{ view_url }}
+
+— Herald
+{% endautoescape %}

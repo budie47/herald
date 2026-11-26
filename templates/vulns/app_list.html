@@ -43,6 +43,7 @@
 <div class="card"><div class="card-body">
   {% if user.is_admin %}
   <div class="d-flex align-items-center gap-2 mb-2">
+    <select name="module" class="form-select form-select-sm w-auto" aria-label="Which vulnerabilities to send"><option value="containers">Container vulnerabilities</option><option value="servers">Server vulnerabilities</option></select>
     <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send to the support teams of the selected applications? Apps with an open follow-up get a reminder.')"><i class="bi bi-envelope"></i> Send to support (<span id="bulk-count">0</span>)</button>
     <input type="text" name="remark" class="form-control form-control-sm w-auto flex-grow-1" style="max-width: 340px" placeholder="Optional remark" aria-label="Optional remark">
     <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="include_in_email" id="bulk-include"><label class="form-check-label" for="bulk-include">Include in email</label></div>
@@ -54,7 +55,7 @@
     <thead><tr>
       {% if user.is_admin %}<th><input type="checkbox" class="form-check-input" id="check-all"></th>{% endif %}
       <th>App ID</th><th>Name</th><th>Owner</th><th>Service / Department</th>
-      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th>Follow-up</th><th>Last notified</th><th></th>
+      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th class="text-end" title="Open server vulnerabilities">Servers</th><th>Follow-up</th><th>Last notified</th><th></th>
     </tr></thead>
     <tbody>
     {% for row in page %}
@@ -74,6 +75,7 @@
         <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
         <td class="text-end {% if row.not_seen %}text-warning fw-semibold{% endif %}">{{ row.not_seen }}</td>
         <td class="text-end text-success">{{ row.remediated }}</td>
+        <td class="text-end">{% if row.server_open and app_href %}<a href="{% url 'app_servers' row.app_id %}">{{ row.server_open }}</a>{% else %}{{ row.server_open|default:"—" }}{% endif %}</td>
         <td class="nowrap">{% if row.followup %}<span class="badge {{ row.followup.status|followup_class }}">{{ row.followup.get_status_display }}</span>{% if row.followup_overdue %} <span class="badge text-bg-warning">Overdue</span>{% endif %}{% else %}<span class="text-muted small">—</span>{% endif %}</td>
         <td class="small nowrap">{{ row.last_notified|date:"Y-m-d H:i"|default:"never" }}</td>
         <td class="text-end nowrap">
@@ -83,7 +85,7 @@
         </td>
       </tr>
     {% empty %}
-      <tr><td colspan="13" class="text-muted">No applications match these filters.</td></tr>
+      <tr><td colspan="14" class="text-muted">No applications match these filters.</td></tr>
     {% endfor %}
     </tbody>
   </table>

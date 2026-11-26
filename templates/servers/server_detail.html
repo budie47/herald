@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% load herald_tags %}
+{% block title %}{{ server.name }}{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'server_list' %}">&larr; Servers</a>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ server.name }}
+    {% if not server.in_cmdb %}<span class="badge text-bg-warning fs-6 align-middle">not in CMDB</span>{% endif %}
+    {% if not server.app_id %}<span class="badge text-bg-warning fs-6 align-middle">unassigned</span>{% endif %}</h1>
+  <div class="small text-muted">{% if server.last_detected %}Last detected {{ server.last_detected|date:"Y-m-d" }}{% endif %}{% if server.cmdb_changed_at %} · CMDB record updated {{ server.cmdb_changed_at|date:"Y-m-d" }}{% endif %}</div>
+</div>
+{% if server.match_note %}<div class="alert alert-warning py-2 small">{{ server.match_note }}. Herald doesn't guess between CMDB servers, so this name was kept as its own server. Give it an App ID by hand, or make its name unique in CMDB.</div>{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Ownership</h2>
+    <dl class="row small mb-0">
+      <dt class="col-5">App ID</dt><dd class="col-7">{% if server.app_id %}{% url 'app_servers' server.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ server.app_id }}</a>{% else %}{{ server.app_id }}{% endif %}{% if app.name %} · {{ app.name }}{% endif %}{% else %}<span class="badge text-bg-warning">Unassigned</span>{% endif %}</dd>
+      <dt class="col-5">Linked by</dt><dd class="col-7">{% if server.cmdb_app_id %}CMDB (<code>u_id</code>){% elif server.app_id %}Assigned by hand{% if server.assigned_at %} on {{ server.assigned_at|date:"Y-m-d" }}{% endif %}{% else %}—{% endif %}</dd>
+      <dt class="col-5">Team</dt><dd class="col-7">{{ app.support_team|default:"—" }}</dd>
+      <dt class="col-5">Owned by (CMDB)</dt><dd class="col-7">{{ server.owned_by|default:"—" }}</dd>
+      <dt class="col-5">Managed by (CMDB)</dt><dd class="col-7">{{ server.managed_by|default:"—" }}</dd>
+      <dt class="col-5">Support group</dt><dd class="col-7">{{ server.support_group|default:"—" }}</dd>
+    </dl>
+    {% if history %}
+    <h3 class="h6 mt-3">Assignment history</h3>
+    <ul class="small mb-0 ps-3">{% for h in history %}<li>{{ h.changed_at|date:"Y-m-d H:i" }} · {{ h.old_app_id|default:"Unassigned" }} → {{ h.new_app_id|default:"Unassigned" }} by {{ h.changed_by.email|default:"(deleted user)" }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Server</h2>
+    <dl class="row small mb-0">
+      <dt class="col-5">Class</dt><dd class="col-7">{{ server.server_class|default:"—" }}</dd>
+      <dt class="col-5">Environment</dt><dd class="col-7">{{ server.environment|default:"—" }}</dd>
+      <dt class="col-5">OS</dt><dd class="col-7">{{ server.os_label|default:"—" }}</dd>
+      <dt class="col-5">IP address</dt><dd class="col-7 font-monospace">{{ server.ip_address|default:"—" }}</dd>
+      <dt class="col-5">FQDN</dt><dd class="col-7">{{ server.fqdn|default:"—" }}</dd>
+      <dt class="col-5">Status</dt><dd class="col-7">{{ server.operational_status|default:"—" }}</dd>
+      <dt class="col-5">Company</dt><dd class="col-7">{{ server.company|default:"—" }}</dd>
+      <dt class="col-5">Asset</dt><dd class="col-7">{{ server.asset|default:"—" }}</dd>
+      <dt class="col-5">Location</dt><dd class="col-7">{{ server.location|default:"—" }}</dd>
+    </dl>
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Vulnerabilities</h2>
+    <div class="d-flex gap-3 mb-2 flex-wrap">
+      <div><div class="stat">{{ server.open_count }}</div><div class="small text-muted">open</div></div>
+      <div><div class="stat {% if server.kev_open %}text-danger{% endif %}">{{ server.kev_open }}</div><div class="small text-muted">KEV</div></div>
+      <div><div class="stat {% if server.past_slo_open %}text-danger{% endif %}">{{ server.past_slo_open }}</div><div class="small text-muted">past SLO</div></div>
+      <div><div class="stat text-success">{{ remediated }}</div><div class="small text-muted">remediated</div></div>
+    </div>
+    <div>{% if server.critical_open %}<span class="sev sev-critical">{{ server.critical_open }} Critical</span> {% endif %}{% if server.high_open %}<span class="sev sev-high">{{ server.high_open }} High</span>{% endif %}</div>
+  </div></div></div>
+</div>
+
+{% if server.in_cmdb %}
+<div class="card mb-3"><div class="card-body">
+  <details><summary class="h6 mb-0">Full CMDB record</summary>
+    <dl class="row small mt-2 mb-0">{% for label, value in server.cmdb_rows %}<dt class="col-sm-3 col-lg-2">{{ label }}</dt><dd class="col-sm-9 col-lg-4 text-break">{{ value }}</dd>{% endfor %}</dl>
+  </details>
+</div></div>
+{% endif %}
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">Vulnerabilities on this server</h2>
+  {% url 'server_detail' server.pk as reset_url %}
+  {% include "servers/_finding_table.html" with show_server=False %}
+</div></div>
+{% endblock %}

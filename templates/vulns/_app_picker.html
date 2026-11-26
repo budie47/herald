@@ -1,4 +1,4 @@
-<div class="app-picker" data-search-url="{% url 'account_app_search' %}" {% if account_pk %}data-accounts="{{ account_pk }}"{% endif %} {% if allow_clear %}data-allow-clear="1"{% endif %}>
+<div class="app-picker" data-search-url="{% if search_url %}{{ search_url }}{% else %}{% url 'account_app_search' %}{% endif %}" {% if account_pk %}data-accounts="{{ account_pk }}"{% endif %} {% if allow_clear %}data-allow-clear="1"{% endif %}>
   <input type="hidden" name="application" class="picker-value" value="">
   <div class="input-group input-group-sm">
     <span class="input-group-text"><i class="bi bi-search"></i></span>

@@ -3,7 +3,7 @@
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
-  <h1 class="h3 mb-0">Dashboard</h1>
+  <div class="d-flex align-items-center gap-3 flex-wrap"><h1 class="h3 mb-0">Dashboard</h1>{% include "vulns/_dashboard_switch.html" %}</div>
   <div class="small text-muted">
     {% if last_import %}Last import: {% if user.is_admin %}<a href="{% url 'import_detail' last_import.pk %}">#{{ last_import.pk }}</a>{% else %}#{{ last_import.pk }}{% endif %} · {{ last_import.finalized_at|date:"Y-m-d H:i" }} UTC{% else %}No imports yet{% endif %}
   </div>

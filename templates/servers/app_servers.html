@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% load herald_tags humanize %}
+{% block title %}{{ app_id }} · Servers{% endblock %}
+{% block content %}
+{% include "vulns/_app_header.html" %}
+<div class="row g-3 mb-3">
+{% include "vulns/_app_contacts_card.html" %}
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Server summary</h2>
+    <div class="d-flex gap-3 mb-2 flex-wrap">
+      <div><div class="stat">{{ summary.open|intcomma }}</div><div class="small text-muted">open</div></div>
+      <div><div class="stat {% if summary.kev %}text-danger{% endif %}">{{ summary.kev|intcomma }}</div><div class="small text-muted">actively exploited (KEV)</div></div>
+      <div><div class="stat {% if summary.past_slo %}text-danger{% endif %}">{{ summary.past_slo|intcomma }}</div><div class="small text-muted">past SLO</div></div>
+      <div><div class="stat text-success">{{ summary.remediated|intcomma }}</div><div class="small text-muted">remediated</div></div>
+    </div>
+    <div class="mb-2">{% for sev, n in severity_counts %}{% if n %}<span class="sev {{ sev|sev_class }}">{{ n }} {{ sev }}</span> {% endif %}{% endfor %}</div>
+    <div class="small text-muted">{{ server_total }} server{{ server_total|pluralize }} · Reopened: {{ summary.reopened }}</div>
+  </div></div></div>
+{% include "vulns/_app_notifications_card.html" %}
+</div>
+
+{% if app %}{% include "vulns/_follow_up.html" %}{% endif %}
+
+<div class="card mb-3"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <h2 class="h6 mb-0">Servers <span class="text-muted fw-normal small">({{ server_total|intcomma }})</span></h2>
+    {% if server_total > servers|length %}<a class="small" href="{% url 'server_list' %}?state=all&amp;app={{ app_id|urlencode }}">Show all {{ server_total|intcomma }} servers</a>{% endif %}
+  </div>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0 small">
+    <thead><tr><th>Server</th><th>Class</th><th>Environment</th><th>OS</th><th>IP address</th><th>How it is linked</th><th class="text-end">Open</th><th class="text-end">Critical</th><th class="text-end">High</th><th class="text-end">KEV</th></tr></thead>
+    <tbody>
+    {% for s in servers %}
+      <tr>
+        <td><a href="{% url 'server_detail' s.pk %}">{{ s.name }}</a></td>
+        <td>{{ s.server_class|default:"—" }}</td>
+        <td>{{ s.environment|default:"—" }}</td>
+        <td>{{ s.os_label|default:"—" }}</td>
+        <td class="font-monospace">{{ s.ip_address|default:"—" }}</td>
+        <td>{% if s.cmdb_app_id %}<span class="badge text-bg-primary">CMDB</span>{% else %}<span class="badge text-bg-secondary">assigned by hand</span>{% endif %}</td>
+        <td class="text-end fw-semibold">{{ s.open_count }}</td>
+        <td class="text-end">{{ s.critical_open }}</td>
+        <td class="text-end">{{ s.high_open }}</td>
+        <td class="text-end {% if s.kev_open %}text-danger fw-semibold{% endif %}">{{ s.kev_open }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="10" class="text-muted">No servers belong to this App ID.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+
+<div class="card"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <h2 class="h6 mb-0">Server vulnerabilities</h2>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'app_servers_export' app_id %}{% qs page=None %}"><i class="bi bi-download"></i> Export CSV</a>
+  </div>
+  {% url 'app_servers' app_id as reset_url %}
+  {% include "servers/_finding_table.html" with show_server=True %}
+</div></div>
+{% if app %}{% include "vulns/_follow_up_modals.html" %}{% endif %}
+{% endblock %}

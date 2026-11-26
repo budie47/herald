@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}CMDB inventory{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">CMDB inventory <span class="fs-6 text-muted">· {{ server_count|intcomma }} server{{ server_count|pluralize }} from CMDB</span></h1>
+<div class="row g-3 mb-3">
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Upload the CMDB server report</h2>
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.file }}
+      <div class="form-text mb-2">The ServiceNow export as CSV (.csv) or Excel (.xlsx, .xlsm), up to 100 MB. For Excel the first worksheet is read.</div>
+      <button class="btn btn-primary"><i class="bi bi-cloud-upload"></i> Upload and preview</button>
+    </form>
+  </div></div></div>
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body small">
+    <h2 class="h6">How the CMDB upload works</h2>
+    <ol class="ps-3">
+      <li>Herald reads the file and shows a <strong>preview</strong>: new servers, changed servers, and rows it can't use. Nothing changes yet.</li>
+      <li><strong>Apply</strong> saves the changes. Servers missing from the file are left as they are, so a partial file is safe.</li>
+    </ol>
+    <p>A server is identified by its <code>name</code>, ignoring capitals. It belongs to the App ID in <code>u_id</code>, and CMDB always wins: a server with a <code>u_id</code> can't be reassigned by hand. App IDs new to Herald are added to Applications, ready for their contacts.</p>
+    <p class="mb-2">When applied, servers first found in a scan are linked to the CMDB server their name now matches, and their vulnerabilities move with them.</p>
+    <details>
+      <summary>Columns ({{ columns|length }}) — <em>name</em> and <em>u_id</em> are the ones Herald needs</summary>
+      <div class="row row-cols-2 row-cols-md-3 g-1 mt-1">{% for c in columns %}<div class="col"><code>{{ c }}</code></div>{% endfor %}</div>
+      <p class="mt-2 mb-0 text-muted">Also accepted: <code>Asset Name</code> for name, <code>Environment</code> for u_environment, and <code>AppID</code> or <code>App ID</code> for u_id. Every column is kept and shown on the server's page.</p>
+    </details>
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">CMDB uploads</h2>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>File</th><th>Status</th><th>Uploaded (UTC)</th><th>By</th><th class="text-end">New</th><th class="text-end">Updated</th><th class="text-end">Unchanged</th><th class="text-end">Rejected</th><th>Applied (UTC)</th></tr></thead>
+    <tbody>
+    {% for i in page %}
+      <tr>
+        <td class="text-break"><a href="{% url 'inventory_detail' i.pk %}">{{ i.filename }}</a></td>
+        <td><span class="badge {% if i.status == 'applied' %}text-bg-success{% elif i.status == 'failed' %}text-bg-danger{% elif i.status == 'preview' %}text-bg-warning{% else %}text-bg-info{% endif %}">{{ i.get_status_display }}</span></td>
+        <td class="nowrap">{{ i.created_at|date:"Y-m-d H:i" }}</td>
+        <td class="small">{{ i.created_by.email|default:"" }}</td>
+        <td class="text-end">{{ i.new_count|intcomma }}</td>
+        <td class="text-end">{{ i.updated_count|intcomma }}</td>
+        <td class="text-end">{{ i.unchanged_count|intcomma }}</td>
+        <td class="text-end {% if i.rejected_count %}text-danger{% endif %}">{{ i.rejected_count|intcomma }}</td>
+        <td class="nowrap">{{ i.applied_at|date:"Y-m-d H:i"|default:"—" }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="9" class="text-muted">No CMDB uploads yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endblock %}

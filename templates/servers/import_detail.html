@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% block title %}Server import #{{ run.pk }}{% endblock %}
+{% block content %}
+<a class="small" href="{% url 'server_import_home' %}">&larr; Upload server vulnerabilities</a>
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Server import #{{ run.pk }}
+    {% if run.is_draft %}<span class="badge text-bg-warning fs-6 align-middle">draft</span>
+    {% elif run.status == "finalized" %}<span class="badge text-bg-success fs-6 align-middle">finalized</span>
+    {% else %}<span class="badge text-bg-secondary fs-6 align-middle">{{ run.status }}</span>{% endif %}</h1>
+  <div class="small text-muted">Started {{ run.created_at|date:"Y-m-d H:i" }} UTC{% if run.created_by %} by {{ run.created_by.email }}{% endif %}
+    {% if run.finalized_at %} · finalized {{ run.finalized_at|date:"Y-m-d H:i" }} UTC by {{ run.finalized_by.email|default:"?" }}{% endif %}</div>
+</div>
+
+{% if is_busy %}<div class="alert alert-info py-2 small"><span class="spinner-border spinner-border-sm"></span> {% if run.phase == "finalizing" %}Finalizing. Live data changes when this finishes.{% elif run.phase == "planning" %}Working out what this import will change.{% else %}Reading uploaded files.{% endif %} This page updates by itself.</div>{% endif %}
+{% if last_failure and not is_busy %}<div class="alert alert-danger py-2 small">The last finalize did not complete, so live data was not changed: {{ last_failure.message }}</div>{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Files</h2>
+    <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead><tr><th>File</th><th>Report</th><th>Status</th><th class="text-end">Read</th><th class="text-end">Accepted</th><th class="text-end">Duplicates</th><th class="text-end">Rejected</th></tr></thead>
+      <tbody>
+      {% for f in files %}
+        <tr>
+          <td>{{ f.filename }}<div class="small text-muted">{{ f.size_bytes|filesizeformat }} · header row {{ f.header_row }}</div>
+            {% if f.error %}<div class="small text-danger">{{ f.error }}</div>{% endif %}
+            {% if f.missing_columns and f.status == "done" %}<div class="small text-muted">Not in this file: {{ f.missing_columns|join:", " }}</div>{% endif %}</td>
+          <td>{{ f.get_kind_display|default:"—" }}</td>
+          <td><span class="badge {% if f.status == 'done' %}text-bg-success{% elif f.status == 'failed' %}text-bg-danger{% else %}text-bg-info{% endif %}">{{ f.get_status_display }}</span></td>
+          <td class="text-end">{{ f.rows_read|intcomma }}</td>
+          <td class="text-end">{{ f.accepted|intcomma }}</td>
+          <td class="text-end {% if f.duplicates %}text-warning-emphasis{% endif %}">{{ f.duplicates|intcomma }}</td>
+          <td class="text-end {% if f.rejected %}text-danger fw-semibold{% endif %}">{{ f.rejected|intcomma }}</td>
+        </tr>
+      {% empty %}<tr><td colspan="7" class="text-muted">No files yet.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if run.is_draft and run.phase != "finalizing" %}
+    <form method="post" action="{% url 'server_import_add_file' run.pk %}" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">{% csrf_token %}
+      <div class="flex-grow-1">{{ form.file }}</div>
+      <div><label class="visually-hidden" for="{{ form.date_order.id_for_label }}">Date order for text dates</label>{{ form.date_order }}</div>
+      <button class="btn btn-outline-primary nowrap"><i class="bi bi-plus-lg"></i> Add MFS12 batch or Qualys file</button>
+    </form>
+    {% endif %}
+    {% if run.is_draft %}
+    <hr>
+    <h2 class="h6">Completeness check</h2>
+    <form method="post" action="{% url 'server_import_expected' run.pk %}" class="row g-2 align-items-end">{% csrf_token %}
+      <div class="col-sm-5"><label class="form-label small mb-0" for="expected-total">Total MFS12 rows in Power BI</label>
+        <input id="expected-total" name="expected_total" inputmode="numeric" class="form-control form-control-sm" value="{{ run.expected_total|default_if_none:'' }}" placeholder="e.g. 100,000"></div>
+      <div class="col-sm-3"><button class="btn btn-sm btn-outline-dark">Save total</button></div>
+      <div class="col-12 small">Herald has <strong>{{ run.unique_rows|intcomma }}</strong> unique server + QID rows{% if run.duplicates_count %} after removing {{ run.duplicates_count|intcomma }} duplicate{{ run.duplicates_count|pluralize }}{% endif %}.
+        {% if run.expected_total is None %}<span class="text-muted">Enter the Power BI total to confirm every batch is in.</span>
+        {% elif run.count_matches %}<span class="text-success fw-semibold"><i class="bi bi-check-circle-fill"></i> Matches Power BI.</span>
+        {% else %}<span class="text-danger fw-semibold"><i class="bi bi-exclamation-triangle-fill"></i> Power BI shows {{ run.expected_total|intcomma }}.</span>{% endif %}
+      </div>
+    </form>
+    {% endif %}
+  </div></div></div>
+
+  <div class="col-lg-5"><div class="card h-100"><div class="card-body">
+    {% if run.is_draft %}
+      <h2 class="h6">What finalizing will do</h2>
+      {% if run.plan_ready %}
+      <table class="table table-sm mb-2">
+        <tr><td>New vulnerabilities</td><td class="text-end fw-bold">{{ plan.new|intcomma }}</td></tr>
+        <tr><td>Still open</td><td class="text-end">{{ plan.updated|intcomma }}</td></tr>
+        <tr><td>Reopened <span class="small text-muted">— remediated, listed again</span></td><td class="text-end text-warning fw-bold">{{ plan.reopened|intcomma }}</td></tr>
+        <tr><td>Marked remediated <span class="small text-muted">— no longer in MFS12</span></td><td class="text-end text-success fw-bold">{{ plan.remediated|intcomma }}</td></tr>
+        <tr class="table-light"><td>Servers in this import</td><td class="text-end">{{ plan.servers|intcomma }}</td></tr>
+        {% if plan.missing_servers %}<tr class="table-light"><td>Servers missing from this import <span class="small text-muted">— all their open vulnerabilities will be marked remediated</span></td><td class="text-end fw-semibold">{{ plan.missing_servers|intcomma }}</td></tr>{% endif %}
+      </table>
+      {% if not plan.has_findings %}<div class="alert alert-warning py-2 small">Add an MFS12 file. A Qualys file only adds details to MFS12 vulnerabilities.</div>
+      {% elif plan.protect_all %}<div class="alert alert-warning py-2 small">A failed MFS12 file, or a row with no server name, means this import will not mark anything remediated.</div>
+      {% elif plan.protected %}<div class="alert alert-warning py-2 small">{{ plan.protected|intcomma }} server{{ plan.protected|pluralize }} had rejected rows, so nothing there will be marked remediated.</div>{% endif %}
+      {% if plan.older %}<div class="alert alert-warning py-2 small">The newest Last Detected in this upload ({{ plan.newest|slice:":10" }}) is older than in Herald ({{ plan.live_newest|slice:":10" }}). Check that this is the latest MFS12 export.</div>{% endif %}
+      <form method="post" action="{% url 'server_import_finalize' run.pk %}" id="finalize-form">{% csrf_token %}
+        {% if plan.remediated %}
+        {% if not run.count_matches or plan.older %}
+        <label class="form-label small mb-0" for="override-reason">Reason to continue{% if not run.count_matches %} without a matching total{% endif %}</label>
+        <input id="override-reason" name="override_reason" class="form-control form-control-sm mb-2" placeholder="Required to mark vulnerabilities remediated">
+        {% endif %}
+        {% if needs_confirm %}
+        <div class="alert alert-danger py-2 small mb-2">This removes <strong>{{ plan.remediated_pct }}%</strong> of open server vulnerabilities. Check that every batch is uploaded.</div>
+        <label class="form-label small mb-0" for="confirm-text">Type {{ confirm_word }} to confirm</label>
+        <input id="confirm-text" name="confirm_text" class="form-control form-control-sm mb-2" autocomplete="off">
+        {% endif %}
+        <div class="form-check small mb-2"><input class="form-check-input" type="checkbox" name="skip_remediation" id="skip-remediation"><label class="form-check-label" for="skip-remediation">Apply new and changed vulnerabilities, but mark nothing remediated</label></div>
+        {% endif %}
+        <button class="btn btn-success" {% if is_busy or not plan.has_findings %}disabled{% endif %}><i class="bi bi-check2-all"></i> Finalize import</button>
+      </form>
+      {% elif not is_busy %}<p class="small text-muted">Upload a file to see what will change.</p>{% else %}<p class="small text-muted">Preview is being prepared.</p>{% endif %}
+      <form method="post" action="{% url 'server_import_discard' run.pk %}" class="mt-2">{% csrf_token %}
+        <button class="btn btn-outline-danger btn-sm" {% if is_busy %}disabled{% endif %} onclick="return confirm('Discard server import #{{ run.pk }}? Uploaded files will be dropped and nothing will change.')"><i class="bi bi-trash"></i> Discard</button>
+      </form>
+      <p class="small text-muted mt-2 mb-0">Waiting for more batches? Leave it as a draft. Nothing is applied until you finalize.</p>
+    {% else %}
+      <h2 class="h6">Result</h2>
+      <table class="table table-sm mb-2">
+        <tr><td>Files</td><td class="text-end">{{ run.files_count|intcomma }}</td></tr>
+        <tr><td>Unique server + QID rows</td><td class="text-end">{{ run.unique_rows|intcomma }}</td></tr>
+        <tr><td>Duplicates removed</td><td class="text-end">{{ run.duplicates_count|intcomma }}</td></tr>
+        <tr><td>Servers</td><td class="text-end">{{ run.servers_count|intcomma }}</td></tr>
+        <tr><td>New</td><td class="text-end">{{ run.new_count|intcomma }}</td></tr>
+        <tr><td>Still open</td><td class="text-end">{{ run.updated_count|intcomma }}</td></tr>
+        <tr><td>Reopened</td><td class="text-end">{{ run.reopened_count|intcomma }}</td></tr>
+        <tr><td>Remediated</td><td class="text-end">{{ run.remediated_count|intcomma }}</td></tr>
+      </table>
+      {% if run.override_reason %}<p class="small mb-1"><strong>Reason given:</strong> {{ run.override_reason }}</p>{% endif %}
+      {% if run.remediation_skipped %}<p class="small mb-0">Finalized without marking anything remediated.</p>{% endif %}
+    {% endif %}
+  </div></div></div>
+</div>
+
+{% if plan.how %}
+<div class="row g-3 mb-3">
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">How servers were matched to CMDB</h2>
+    <table class="table table-sm small mb-2">{% for label, n in plan.how %}<tr><td>{{ label }}</td><td class="text-end">{{ n|intcomma }}</td></tr>{% endfor %}</table>
+    {% if plan.unmatched %}<p class="small mb-1">{{ plan.unmatched|intcomma }} server{{ plan.unmatched|pluralize }} will be added as <strong>unassigned</strong>, to be given an App ID by hand or by a later CMDB upload.</p>{% endif %}
+    {% if plan.ambiguous %}
+    <p class="small mb-1 fw-semibold">Names that match more than one CMDB server:</p>
+    <ul class="small mb-0">{% for name, note in plan.ambiguous %}<li><code>{{ name }}</code>: {{ note }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div></div></div>
+  <div class="col-lg-6"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Qualys details</h2>
+    {% if plan.qualys_rows %}
+    <table class="table table-sm small mb-0">
+      <tr><td>Qualys rows</td><td class="text-end">{{ plan.qualys_rows|intcomma }}</td></tr>
+      <tr><td>MFS12 vulnerabilities that get Solution and Results</td><td class="text-end">{{ plan.qualys_matched|intcomma }}</td></tr>
+      <tr><td>Qualys server + QID not in MFS12 <span class="text-muted">— ignored</span></td><td class="text-end">{{ plan.qualys_unmatched|intcomma }}</td></tr>
+    </table>
+    {% else %}<p class="small text-muted mb-0">No Qualys file in this import. Vulnerabilities keep the Solution and Results they already have.</p>{% endif %}
+  </div></div></div>
+</div>
+{% endif %}
+
+{% if run.is_draft and run.plan_ready and plan.remediated %}
+<div class="card mb-3"><div class="card-body">
+  <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
+    <h2 class="h6">Will be marked remediated <span class="text-muted fw-normal small">{% for app_id, n in plan.by_app %}{{ app_id }}: {{ n|intcomma }}{% if not forloop.last %}, {% endif %}{% endfor %}</span></h2>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'server_import_planned_export' run.pk %}"><i class="bi bi-download"></i> Download full list</a>
+  </div>
+  <div class="table-responsive">
+  <table class="table table-sm small mb-0">
+    <thead><tr><th>Server</th><th>App ID</th><th>QID</th><th>Title</th><th>Severity</th><th>Last detected</th></tr></thead>
+    <tbody>
+    {% for item in page %}{% with f=item.finding %}
+      <tr><td>{{ f.server.name }}</td><td>{{ f.server.app_id|default:"—" }}</td><td>{{ f.qid }}</td><td>{{ f.title }}</td><td>{{ f.severity }}{% if f.cisa_kev %} <span class="badge text-bg-dark">KEV</span>{% endif %}</td><td class="nowrap">{{ f.last_detected|date:"Y-m-d"|default:"—" }}</td></tr>
+    {% endwith %}{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% elif not run.is_draft and page|length %}
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6">Remediated by this import</h2>
+  <div class="table-responsive">
+  <table class="table table-sm small mb-0">
+    <thead><tr><th>Server</th><th>App ID</th><th>QID</th><th>Title</th><th>Severity</th><th>Last detected</th><th>Remediated</th></tr></thead>
+    <tbody>{% for f in page %}<tr><td>{{ f.server.name }}</td><td>{{ f.server.app_id|default:"—" }}</td><td>{{ f.qid }}</td><td>{{ f.title }}</td><td>{{ f.severity }}</td><td>{{ f.last_detected|date:"Y-m-d" }}</td><td>{{ f.remediated_at|date:"Y-m-d" }}</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+  {% include "_pagination.html" %}
+</div></div>
+{% endif %}
+
+{% for f in files %}{% if f.rejected %}
+<div class="card mb-3"><div class="card-body">
+  <h2 class="h6 text-danger">Rejected rows in {{ f.filename }} ({{ f.rejected|intcomma }})</h2>
+  <div class="table-responsive" style="max-height: 320px; overflow-y: auto">
+  <table class="table table-sm small mb-0">
+    <thead class="sticky-top bg-white"><tr><th class="text-end">Row</th><th>Reason</th><th>Asset Name</th><th>QID</th></tr></thead>
+    <tbody>{% for e in f.sample_errors %}<tr><td class="text-end">{{ e.row }}</td><td>{{ e.reason }}</td><td>{{ e.asset_name }}</td><td>{{ e.qid }}</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+  {% if f.rejected > f.sample_errors|length %}<div class="small text-muted mt-1">Showing the first {{ f.sample_errors|length }}.</div>{% endif %}
+</div></div>
+{% endif %}{% endfor %}
+{% endblock %}
+{% block scripts %}
+{% if is_busy %}<script>
+  setInterval(() => {
+    const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    if (!typing) location.reload();
+  }, 4000);
+</script>{% endif %}
+{% endblock %}

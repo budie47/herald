@@ -545,8 +545,15 @@ class Job(models.Model):
         indexes = [models.Index(fields=["status", "id"], name="job_queue")]
 
 
+CONTAINERS, SERVERS = "containers", "servers"
+MODULE_CHOICES = [(CONTAINERS, "Containers"), (SERVERS, "Servers")]
+
+
 class FollowUp(models.Model):
-    """One notification cycle for an application: support first, then escalation to the owner if needed."""
+    """One notification cycle for an application: support first, then escalation to the owner if needed.
+
+    Container and server vulnerabilities each have their own follow-up.
+    """
 
     WAITING, RESPONDED, ESCALATED, CLOSED = "waiting", "responded", "escalated", "closed"
     STATUS_CHOICES = [
@@ -557,6 +564,7 @@ class FollowUp(models.Model):
         Application, null=True, blank=True, on_delete=models.SET_NULL, related_name="follow_ups"
     )
     app_id = models.CharField(max_length=100, db_index=True)
+    module = models.CharField(max_length=10, choices=MODULE_CHOICES, default=CONTAINERS, db_default=CONTAINERS)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=WAITING, db_index=True)
     opened_at = models.DateTimeField(default=timezone.now)
     opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
@@ -576,7 +584,7 @@ class FollowUp(models.Model):
         ordering = ["-opened_at", "-id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["application"], condition=~Q(status="closed"), name="one_open_follow_up_per_application"
+                fields=["application", "module"], condition=~Q(status="closed"), name="one_open_follow_up_per_module"
             ),
         ]
 
@@ -594,6 +602,10 @@ class FollowUp(models.Model):
     def is_overdue(self, cutoff):
         return self.is_waiting and self.waiting_since < cutoff
 
+    @property
+    def is_servers(self):
+        return self.module == SERVERS
+
 
 class Notification(models.Model):
     SENT, FAILED = "sent", "failed"
@@ -605,6 +617,7 @@ class Notification(models.Model):
 
     app_id = models.CharField(max_length=100, db_index=True)
     application = models.ForeignKey(Application, null=True, blank=True, on_delete=models.SET_NULL)
+    module = models.CharField(max_length=10, choices=MODULE_CHOICES, default=CONTAINERS, db_default=CONTAINERS)
     sent_at = models.DateTimeField(auto_now_add=True)
     sent_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     follow_up = models.ForeignKey(

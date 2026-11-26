@@ -287,17 +287,23 @@ def read_rows(fileobj, filename, finder=None):
     raise FileFormatError("Unsupported file type. Upload a .csv, .xlsx or .xlsm file.")
 
 
-def find_header(rows):
+def find_header(rows, header_map=HEADER_MAP, required=REQUIRED):
     """Headers can start on any row: the first row (within the first 50) that has every required column."""
     for position, (_, values) in enumerate(rows[:HEADER_SCAN_ROWS]):
-        keys = {HEADER_MAP.get(normalize_header(v)) for v in values if v is not None}
-        if all(required in keys for required in REQUIRED):
+        keys = {header_map.get(normalize_header(v)) for v in values if v is not None}
+        if all(key in keys for key in required):
             return position, values
     return None, None
 
 
 class StreamParser:
-    """Parses a file in batches. Each batch is (accepted records, rejected rows)."""
+    """Parses a file in batches. Each batch is (accepted records, rejected rows).
+
+    Other layouts (such as the server reports) subclass it with their own columns and _parse.
+    """
+
+    header_map, labels, types, required = HEADER_MAP, LABELS, TYPES, REQUIRED
+    missing_header = "No header row with 'Alert ID', 'Account ID' and 'Account Name' was found"
 
     def __init__(self, fileobj, filename, date_order=""):
         self.rows_read = 0
@@ -305,14 +311,11 @@ class StreamParser:
         self.day_first = DATE_ORDERS.get(date_order)
         self._file = getattr(fileobj, "file", fileobj)
         self._filename = filename
-        rows = read_rows(fileobj, filename)
+        rows = read_rows(fileobj, filename, self.find_header)
         head = list(islice(rows, HEADER_SCAN_ROWS))
-        position, header = find_header(head)
+        position, header = self.find_header(head)
         if position is None:
-            raise FileFormatError(
-                f"No header row with 'Alert ID', 'Account ID' and 'Account Name' was found in the first "
-                f"{HEADER_SCAN_ROWS} rows."
-            )
+            raise FileFormatError(f"{self.missing_header} in the first {HEADER_SCAN_ROWS} rows.")
         self.header_row = head[position][0]
         self._rows = chain(head[position + 1:], rows)
         self._mapping = []
@@ -320,14 +323,18 @@ class StreamParser:
         for index, title in enumerate(header):
             if title is None or str(title).strip() == "":
                 continue
-            key = HEADER_MAP.get(normalize_header(title))
+            key = self.header_map.get(normalize_header(title))
             if key and key not in seen_keys:
                 seen_keys.add(key)
                 self._mapping.append((index, key))
             else:
                 self.unknown_columns.append(str(title).strip())
-        self.missing_columns = [LABELS[key] for key in LABELS if key not in seen_keys]
-        self._date_indexes = [index for index, key in self._mapping if TYPES[key] == DATE]
+        self.missing_columns = [self.labels[key] for key in self.labels if key not in seen_keys]
+        self._date_indexes = [index for index, key in self._mapping if self.types[key] == DATE]
+
+    @classmethod
+    def find_header(cls, rows):
+        return find_header(rows, cls.header_map, cls.required)
 
     def _learn_date_order(self, raw):
         """The first date that can only be read one way sets the order for the whole file."""
@@ -346,7 +353,7 @@ class StreamParser:
         """Only runs when a date is ambiguous, so files with ISO dates or Excel date cells are not read twice."""
         position = self._file.tell()
         self._file.seek(0)
-        rows = read_rows(self._file, self._filename)
+        rows = read_rows(self._file, self._filename, self.find_header)
         try:
             for _, values in rows:
                 for index in self._date_indexes:
@@ -360,6 +367,30 @@ class StreamParser:
             f"Dates such as '{example.strip()}' could be day/month or month/day, and no date in this file settles it. "
             "Upload it again and choose the date order, or export the dates as YYYY-MM-DD."
         )
+
+    def _convert(self, key, raw):
+        """Reads one cell. Date cells also settle the file's date order."""
+        if self.types[key] == DATE:
+            self._learn_date_order(raw)
+            value = to_datetime(raw, self.labels[key], self.day_first)
+            return value.isoformat() if value else None
+        if self.types[key] == NUMBER:
+            return to_number(raw, self.labels[key])
+        if self.types[key] == BOOL:
+            return to_bool(raw)
+        return to_text(raw)
+
+    def _cells(self, values):
+        """{key: value} for the row, and the problems found reading it."""
+        record, problems = {}, []
+        for index, key in self._mapping:
+            raw = values[index] if index < len(values) else None
+            try:
+                record[key] = self._convert(key, raw)
+            except ValueError as exc:
+                record[key] = None
+                problems.append(str(exc))
+        return record, problems
 
     def _parse(self, row_number, values):
         record, problems = {}, []

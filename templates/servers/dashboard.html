@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% load herald_tags humanize %}
+{% block title %}Server dashboard{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
+  <div class="d-flex align-items-center gap-3 flex-wrap"><h1 class="h3 mb-0">Dashboard</h1>{% with module="servers" %}{% include "vulns/_dashboard_switch.html" %}{% endwith %}</div>
+  <div class="small text-muted">
+    {% if last_import %}Last server import: {% if user.is_admin %}<a href="{% url 'server_import_detail' last_import.pk %}">#{{ last_import.pk }}</a>{% else %}#{{ last_import.pk }}{% endif %} · {{ last_import.finalized_at|date:"Y-m-d H:i" }} UTC{% else %}No server imports yet{% endif %}
+    · {% if last_cmdb %}CMDB applied {{ last_cmdb.applied_at|date:"Y-m-d" }}{% else %}No CMDB upload yet{% endif %}
+  </div>
+</div>
+{% if not user.can_view_all %}<div class="alert alert-info py-2 small">Showing only the applications tied to {{ user.email }}.</div>{% endif %}
+
+<div class="row g-3 mb-3 row-cols-2 row-cols-md-3 row-cols-xl-6">
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-bug"></i> Open server vulnerabilities</div><div class="stat">{{ open_count|intcomma }}</div>
+    <div class="small text-muted">{{ critical|intcomma }} Critical · {{ high|intcomma }} High</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-radioactive"></i> Actively exploited (KEV)</div><div class="stat {% if kev %}text-danger{% endif %}">{{ kev|intcomma }}</div>
+    <div class="small text-muted">On the CISA KEV list</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-hdd-rack"></i> Servers with open vulnerabilities</div><div class="stat">{{ servers_with_open|intcomma }}</div>
+    <div class="small text-muted">of {{ servers_total|intcomma }} servers · {{ servers_in_cmdb|intcomma }} in CMDB</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-grid-3x3-gap"></i> Apps with open vulnerabilities</div><div class="stat">{{ apps_with_open|intcomma }}</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-alarm"></i> Past SLO date</div><div class="stat {% if past_slo %}text-danger{% endif %}">{{ past_slo|intcomma }}</div>
+    <div class="small text-muted">As of {{ today|date:"Y-m-d" }}</div>
+  </div></div></div>
+  <div class="col"><div class="card h-100"><div class="card-body">
+    <div class="card-title-sm"><i class="bi bi-check2-circle"></i> Remediated · last 30 days</div><div class="stat text-success">{{ remediated_30|intcomma }}</div>
+    <div class="small text-muted">{{ remediated_all|intcomma }} all time{% if avg_fix_days is not None %} · avg {{ avg_fix_days }} days to fix{% endif %}</div>
+  </div></div></div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">By severity</h2>
+    {% for sev, n in severity_bars %}
+    <div class="row align-items-center g-2 mb-1">
+      <div class="col-4 small">{{ sev|default:"(not set)" }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-{{ sev|sev_class|cut:"sev-" }}" style="width: {% widthratio n severity_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
+    </div>
+    {% empty %}<p class="small text-muted mb-0">No open server vulnerabilities.</p>{% endfor %}
+    <h2 class="h6 mt-3">By server class</h2>
+    {% for cls, n in class_bars %}
+    <div class="row align-items-center g-2 mb-1">
+      <div class="col-4 small text-truncate" title="{{ cls }}">{{ cls }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n class_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
+    </div>
+    {% endfor %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">By environment</h2>
+    {% for env, n in env_bars %}
+    <div class="row align-items-center g-2 mb-1">
+      <div class="col-4 small text-truncate" title="{{ env }}">{{ env }}</div>
+      <div class="col-5"><div class="bar-track"><div class="bar-fill bar-env" style="width: {% widthratio n env_max 100 %}%"></div></div></div>
+      <div class="col-3 text-end small nowrap">{{ n|intcomma }}</div>
+    </div>
+    {% empty %}<p class="small text-muted mb-0">No open server vulnerabilities.</p>{% endfor %}
+  </div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6">Coverage</h2>
+    {% if unassigned_findings and user.can_assign_accounts %}
+    <a class="alert alert-warning d-block text-decoration-none py-2 small" href="{% url 'server_list' %}?state=unassigned"><i class="bi bi-hdd-network"></i> <strong>{{ unassigned_findings|intcomma }} vulnerabilit{{ unassigned_findings|pluralize:"y,ies" }}</strong> on {{ unassigned_servers|intcomma }} server{{ unassigned_servers|pluralize }} with no App ID. Assign them, or add the servers to CMDB.</a>
+    {% endif %}
+    {% if missing_support_total %}
+    <div class="alert alert-warning py-2 small">
+      <strong>{{ missing_support_total|intcomma }} application{{ missing_support_total|pluralize }} with open server vulnerabilities {{ missing_support_total|pluralize:"has,have" }} no team email</strong>, so {{ missing_support_total|pluralize:"it,they" }} can't be notified yet.
+      <div class="mt-1">{% for app_id, n in missing_support %}{% url 'app_servers' app_id as app_href %}{% if app_href %}<a href="{{ app_href }}" class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</a>{% else %}<span class="me-2 nowrap">{{ app_id }} ({{ n|intcomma }})</span>{% endif %}{% endfor %}</div>
+      {% if user.is_admin %}<a href="{% url 'app_contacts' %}">Import contacts</a>{% endif %}
+    </div>
+    {% endif %}
+    <div class="small mb-1">Server notifications sent: {{ notifications_sent }}</div>
+    <h2 class="h6 mt-3">Server follow-ups</h2>
+    <div class="row g-2">
+      <div class="col-4"><div class="stat">{{ followups_waiting }}</div><div class="small text-muted">Awaiting response</div></div>
+      <div class="col-4"><div class="stat {% if followups_overdue %}text-warning{% endif %}">{{ followups_overdue }}</div><div class="small text-muted">Overdue ({{ followup_days }}+ days)</div></div>
+      <div class="col-4"><div class="stat {% if followups_escalated %}text-danger{% endif %}">{{ followups_escalated }}</div><div class="small text-muted">Escalated</div></div>
+    </div>
+  </div></div></div>
+</div>
+
+<div class="card"><div class="card-body">
+  <h2 class="h6">Top 10 applications by open server vulnerabilities</h2>
+  <div class="table-responsive">
+  <table class="table table-sm align-middle mb-0">
+    <thead><tr><th>App ID</th><th class="text-end">Total</th><th>By severity</th><th class="text-end">KEV</th><th class="text-end">Past SLO</th><th>Team email</th></tr></thead>
+    <tbody>
+    {% for row in top_apps %}
+      <tr>
+        <td>{% url 'app_servers' row.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ row.app_id }}</a>{% else %}{{ row.app_id }}{% endif %}</td>
+        <td class="text-end">{{ row.total_open|intcomma }}</td>
+        <td>{% for sev, n in row.severities %}<span class="sev {{ sev|sev_class }}" title="{{ sev }}">{{ n }}</span> {% endfor %}</td>
+        <td class="text-end {% if row.kev %}text-danger fw-semibold{% endif %}">{{ row.kev|default:0 }}</td>
+        <td class="text-end {% if row.past %}text-overdue{% endif %}">{{ row.past|default:0 }}</td>
+        <td>{% if row.no_team %}<span class="text-warning"><i class="bi bi-exclamation-circle"></i> Missing</span>{% else %}<i class="bi bi-check-circle-fill text-success"></i>{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6" class="text-muted">No open server vulnerabilities{% if user.is_admin %} — <a href="{% url 'server_import_home' %}">upload MFS12 data</a>{% endif %}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+{% endblock %}

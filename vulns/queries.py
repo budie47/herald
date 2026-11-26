@@ -11,7 +11,7 @@ from core.models import AppSettings
 
 from .columns import SEVERITY_ORDER
 from .models import (
-    AlertSummary, Application, CloudAccount, CveRecord, FollowUp, Notification, Vulnerability,
+    CONTAINERS, AlertSummary, Application, CloudAccount, CveRecord, FollowUp, Notification, Vulnerability,
 )
 
 PAGE_SIZES = ["10", "25", "50", "100"]
@@ -61,8 +61,10 @@ def scoped_apps(user):
     return qs if ids is None else qs.filter(app_id__in=ids)
 
 
-def scoped_notifications(user):
+def scoped_notifications(user, module=None):
     qs = Notification.objects.select_related("sent_by")
+    if module:
+        qs = qs.filter(module=module)
     ids = visible_app_ids(user)
     return qs if ids is None else qs.filter(app_id__in=ids)
 
@@ -75,8 +77,8 @@ def overdue_q(cutoff):
     return Q(status__in=[FollowUp.WAITING, FollowUp.ESCALATED], waiting_since__lt=cutoff)
 
 
-def scoped_followups(user):
-    qs = FollowUp.objects.all()
+def scoped_followups(user, module=None):
+    qs = FollowUp.objects.all() if module is None else FollowUp.objects.filter(module=module)
     ids = visible_app_ids(user)
     return qs if ids is None else qs.filter(application__app_id__in=ids)
 
@@ -310,13 +312,19 @@ def application_rows(user, params):
     apps = {a.app_id: a for a in scoped_apps(user)}
     last_notified = {
         r["app_id"]: r["last"]
-        for r in scoped_notifications(user).filter(status=Notification.SENT).values("app_id").annotate(last=Max("sent_at"))
+        for r in scoped_notifications(user, CONTAINERS).filter(status=Notification.SENT).values("app_id")
+        .annotate(last=Max("sent_at"))
     }
 
+    from servers.models import ServerSummary  # server counts are shown, never added to container counts
+
+    server_open = dict(
+        ServerSummary.objects.filter(status=OPEN).exclude(app_id="").values_list("app_id").annotate(n=Sum("total"))
+    )
     cutoff = followup_cutoff()
     open_followups = {
         f.application.app_id: f
-        for f in scoped_followups(user).exclude(status=FollowUp.CLOSED).select_related("application")
+        for f in scoped_followups(user, CONTAINERS).exclude(status=FollowUp.CLOSED).select_related("application")
     }
 
     count_keys = ["open", "past_slo", "not_seen", "remediated"] + [s.lower() for s in SEVERITY_ORDER]
@@ -333,6 +341,7 @@ def application_rows(user, params):
             has_email=bool(app and app.has_email),
             total_open=int(totals.get(app_id, 0)),
             last_notified=last_notified.get(app_id),
+            server_open=int(server_open.get(app_id, 0)),
             followup=open_followups.get(app_id),
             followup_overdue=bool(app_id in open_followups and open_followups[app_id].is_overdue(cutoff)),
             narrowed=narrowed,

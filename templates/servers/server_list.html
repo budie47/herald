@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% load herald_tags humanize %}
+{% block title %}Servers{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Servers</h1>
+  {% if user.is_admin %}<div class="d-flex gap-2"><a class="btn btn-outline-primary btn-sm" href="{% url 'server_import_home' %}"><i class="bi bi-cloud-upload"></i> Upload MFS12 / Qualys</a><a class="btn btn-outline-secondary btn-sm" href="{% url 'inventory_home' %}"><i class="bi bi-database"></i> CMDB inventory</a></div>{% endif %}
+</div>
+<p class="text-muted small">Each server belongs to the App ID (<code>u_id</code>) in CMDB. Servers that CMDB doesn't tag, or that aren't in CMDB yet, are <strong>unassigned</strong> until someone gives them an App ID.</p>
+
+<ul class="nav nav-tabs mb-3">
+  {% for value, label in states %}<li class="nav-item"><a class="nav-link {% if state == value %}active{% endif %}" href="{% qs state=value page=None %}">{{ label }}{% if value == "unassigned" and unassigned_servers %} <span class="badge text-bg-warning">{{ unassigned_servers|intcomma }}</span>{% endif %}</a></li>{% endfor %}
+</ul>
+
+<form method="get" class="row g-2 mb-3">
+  <input type="hidden" name="state" value="{{ state }}"><input type="hidden" name="per_page" value="{{ per_page }}">
+  <div class="col-md-3"><input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="Server name, FQDN, IP or App ID" aria-label="Search servers"></div>
+  <div class="col-6 col-md-2"><select name="env" class="form-select form-select-sm" aria-label="Environment"><option value="">All environments</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
+  <div class="col-6 col-md-2"><select name="cls" class="form-select form-select-sm" aria-label="Class"><option value="">All classes</option>{% for c in classes %}<option {% if params.cls == c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div>
+  <div class="col-6 col-md-2"><select name="kev" class="form-select form-select-sm" aria-label="CISA KEV"><option value="">Any</option><option value="yes" {% if params.kev == "yes" %}selected{% endif %}>With actively exploited (KEV)</option></select></div>
+  {% if params.app %}<input type="hidden" name="app" value="{{ params.app }}">{% endif %}
+  <div class="col-6 col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'server_list' %}?state={{ state }}">Reset</a></div>
+  {% if params.app %}<div class="col-12 small">Showing servers of <strong>{{ params.app }}</strong> · <a href="{% qs app=None page=None %}">show every App ID</a></div>{% endif %}
+</form>
+
+<form method="post" action="{% url 'server_assign' %}" id="assign-form">{% csrf_token %}
+<input type="hidden" name="next" value="{{ request.get_full_path }}">
+<input type="hidden" name="select_all" id="select-all" value="">
+<input type="hidden" name="state" value="{{ state }}"><input type="hidden" name="q" value="{{ params.q }}"><input type="hidden" name="env" value="{{ params.env }}"><input type="hidden" name="cls" value="{{ params.cls }}"><input type="hidden" name="app" value="{{ params.app }}"><input type="hidden" name="kev" value="{{ params.kev }}">
+<div class="card"><div class="card-body">
+  {% if can_assign %}
+  <div class="d-flex align-items-start gap-2 mb-2 flex-wrap">
+    {% url 'server_app_search' as server_search_url %}
+    <div style="width: min(420px, 100%)">{% include "vulns/_app_picker.html" with allow_clear=True search_url=server_search_url %}</div>
+    <button class="btn btn-sm btn-primary" id="assign-btn" disabled><i class="bi bi-link-45deg"></i> Assign selected (<span id="assign-count">0</span>)</button>
+    <span class="small text-muted align-self-center">Servers with a CMDB App ID keep it. Correct those in CMDB.</span>
+  </div>
+  <div class="alert alert-info py-1 px-2 small mb-2" id="select-all-bar" hidden>
+    <span id="select-all-text"></span>
+    <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="select-all-btn"></button>
+  </div>
+  {% endif %}
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle mb-0 small">
+    <thead><tr>{% if can_assign %}<th><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select this page"></th>{% endif %}<th>Server</th><th>Class</th><th>Environment</th><th>OS</th><th>IP address</th><th>App ID</th><th class="text-end">Open</th><th class="text-end">Critical</th><th class="text-end">High</th><th class="text-end">KEV</th><th class="text-end">Past SLO</th></tr></thead>
+    <tbody>
+    {% for s in page %}
+      <tr>
+        {% if can_assign %}<td><input type="checkbox" class="form-check-input row-check" name="server_ids" value="{{ s.pk }}" aria-label="Select {{ s.name }}" {% if s.cmdb_app_id %}disabled title="CMDB gives this server its App ID"{% endif %}></td>{% endif %}
+        <td><a href="{% url 'server_detail' s.pk %}">{{ s.name }}</a>{% if not s.in_cmdb %} <span class="badge text-bg-warning">not in CMDB</span>{% endif %}{% if s.match_note %}<div class="text-muted">{{ s.match_note }}</div>{% endif %}</td>
+        <td>{{ s.server_class|default:"—" }}</td>
+        <td>{{ s.environment|default:"—" }}</td>
+        <td>{{ s.os_label|default:"—" }}</td>
+        <td class="font-monospace">{{ s.ip_address|default:"—" }}</td>
+        <td class="nowrap">{% if s.app_id %}{% url 'app_servers' s.app_id as app_href %}{% if app_href %}<a href="{{ app_href }}">{{ s.app_id }}</a>{% else %}{{ s.app_id }}{% endif %}{% if not s.cmdb_app_id %} <span class="badge text-bg-light border">by hand</span>{% endif %}{% else %}<span class="badge text-bg-warning">Unassigned</span>{% endif %}</td>
+        <td class="text-end fw-semibold">{{ s.open_count|intcomma }}</td>
+        <td class="text-end">{{ s.critical_open|intcomma }}</td>
+        <td class="text-end">{{ s.high_open|intcomma }}</td>
+        <td class="text-end {% if s.kev_open %}text-danger fw-semibold{% endif %}">{{ s.kev_open|intcomma }}</td>
+        <td class="text-end {% if s.past_slo_open %}text-overdue{% endif %}">{{ s.past_slo_open|intcomma }}</td>
+      </tr>
+    {% empty %}<tr><td colspan="12" class="text-muted">No servers here.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% include "_pagination_outside_form.html" %}
+</div></div>
+</form>
+{% endblock %}
+{% block scripts %}
+{% if can_assign %}
+{% include "vulns/_app_picker_script.html" %}
+<script>
+  const total = {{ page.paginator.count }}, pageCount = {{ page|length }};
+  const checks = () => [...document.querySelectorAll('.row-check:not(:disabled)')];
+  const selectAll = document.getElementById('select-all'), bar = document.getElementById('select-all-bar');
+  const picked = () => document.querySelector('.picker-value').value;
+  const sync = () => {
+    const n = selectAll.value ? total : checks().filter(c => c.checked).length;
+    document.getElementById('assign-count').textContent = n.toLocaleString();
+    document.getElementById('assign-btn').disabled = n === 0 || !picked();
+    const allOnPage = checks().length > 0 && checks().every(c => c.checked);
+    bar.hidden = !(allOnPage && total > pageCount);
+    document.getElementById('select-all-text').textContent = selectAll.value
+      ? `All ${total.toLocaleString()} matching servers are selected. Those with a CMDB App ID will be skipped. `
+      : `All servers on this page are selected. `;
+    document.getElementById('select-all-btn').textContent = selectAll.value
+      ? 'Clear selection' : `Select all ${total.toLocaleString()} matching servers`;
+  };
+  checks().forEach(c => c.addEventListener('change', () => { selectAll.value = ''; sync(); }));
+  document.getElementById('check-all').addEventListener('change', e => {
+    selectAll.value = ''; checks().forEach(c => c.checked = e.target.checked); sync();
+  });
+  document.getElementById('select-all-btn').addEventListener('click', () => {
+    if (selectAll.value) { selectAll.value = ''; checks().forEach(c => c.checked = false); document.getElementById('check-all').checked = false; }
+    else { selectAll.value = '1'; }
+    sync();
+  });
+  document.addEventListener('picker:change', sync);
+  sync();
+</script>
+{% endif %}
+{% endblock %}
