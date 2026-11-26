@@ -1,4 +1,4 @@
-<a class="small" href="{% url 'app_list' %}">&larr; Applications</a>
+<a class="small" href="{% url 'app_list' %}{% if module == "servers" %}?tab=servers{% endif %}">&larr; Applications</a>
 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
   <h1 class="h3 mb-0">{{ app_id }}{% if app.name %} <span class="text-muted fs-5">· {{ app.name }}</span>{% endif %}
     {% if not app %}<span class="badge text-bg-warning fs-6 align-middle">unregistered</span>{% endif %}</h1>

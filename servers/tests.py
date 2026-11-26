@@ -487,6 +487,51 @@ class NotificationTests(Base):
         self.assertContains(self.client.get("/notifications/?module=servers"), "Servers")
 
 
+class ApplicationTabTests(Base):
+    def setUp(self):
+        super().setUp()
+        load_cmdb(self.admin, cmdb("srv-a", "APP-S", env="Production"), cmdb("srv-b", "APP-S"), cmdb("srv-c", "APP-BOTH", env="Test"))
+        finish(self.admin, mfs_file(mfs("srv-a", "1", "Critical", kev="Yes"), mfs("srv-c", "2")))
+        AlertSummary.objects.create(owner_app_id="APP-C", cloud_account_id=1, status="open", severity="High", total=4)
+        AlertSummary.objects.create(owner_app_id="APP-BOTH", cloud_account_id=1, status="open", severity="Low", total=1)
+        Application.objects.create(app_id="APP-NEW", support_emails="new@example.com")
+        Application.objects.filter(app_id="APP-S").update(support_emails="s@example.com")
+        self.client.force_login(self.admin)
+
+    def ids(self, path):
+        return [row["app_id"] for row in self.client.get(path).context["page"]]
+
+    def test_each_tab_lists_its_own_applications(self):
+        self.assertEqual(sorted(self.ids("/applications/")), ["APP-BOTH", "APP-C", "APP-NEW"])
+        self.assertEqual(sorted(self.ids("/applications/?tab=servers")), ["APP-BOTH", "APP-NEW", "APP-S"])
+        page = self.client.get("/applications/?tab=servers")
+        row = next(r for r in page.context["page"] if r["app_id"] == "APP-S")
+        self.assertEqual(
+            (row["servers"], row["servers_open"], row["open"], row["critical"], row["kev"]), (2, 1, 1, 1, 1)
+        )
+        self.assertEqual([n for _, _, n in page.context["tabs"]], [5, 2])
+        self.assertContains(page, '<input type="hidden" name="module" value="servers">')
+        self.assertContains(page, "Send server vulnerabilities to support")
+        self.assertContains(page, 'href="/applications/APP-S/servers/"')
+        self.assertContains(self.client.get("/applications/"), '<input type="hidden" name="module" value="containers">')
+
+    def test_server_tab_filters(self):
+        self.assertEqual(self.ids("/applications/?tab=servers&kev=yes"), ["APP-S"])
+        self.assertEqual(self.ids("/applications/?tab=servers&severity=Critical"), ["APP-S"])
+        self.assertEqual(self.ids("/applications/?tab=servers&env=Production&status=with_vulns"), ["APP-S"])
+        self.assertEqual(self.ids("/applications/?tab=servers&q=app-both"), ["APP-BOTH"])
+        self.assertEqual(self.ids("/applications/?tab=servers&notified=never&status=no_email"), ["APP-BOTH"])
+
+    def test_navigation(self):
+        page = self.client.get("/applications/")
+        self.assertContains(page, 'href="/cloud-accounts/?state=all">Cloud accounts</a>')
+        self.assertContains(page, 'href="/cloud-accounts/?state=needs">Needs assignment')
+        self.assertContains(page, 'href="/imports/">Upload Data')
+        user = User.objects.create_user("u@example.com", "pw-Example-123", role=Role.objects.get(key=Role.USER))
+        self.client.force_login(user)
+        self.assertNotContains(self.client.get("/applications/"), "Cloud Accounts")
+
+
 class AccessAndPageTests(Base):
     def setUp(self):
         super().setUp()

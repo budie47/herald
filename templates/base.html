@@ -55,10 +55,17 @@
         <li class="nav-item"><a class="nav-link {% active 'dashboard' %}" href="{% url 'dashboard' %}"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
         <li class="nav-item"><a class="nav-link {% active 'app_' %}" href="{% url 'app_list' %}"><i class="bi bi-grid-3x3-gap"></i> Applications</a></li>
         {% if user.can_assign_accounts %}
-        <li class="nav-item"><a class="nav-link {% active 'account_' %}" href="{% url 'account_list' %}"><i class="bi bi-cloud"></i> Cloud Accounts{% if unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}</a></li>
-        {% endif %}
-        {% if user.is_admin %}
-        <li class="nav-item"><a class="nav-link {% active 'import_' %}" href="{% url 'import_home' %}"><i class="bi bi-cloud-upload"></i> Upload Data{% if draft_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a></li>
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% active 'account_' 'import_' %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-cloud"></i> Cloud Accounts{% if unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}{% if user.is_admin and draft_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="{% url 'account_list' %}?state=all">Cloud accounts</a></li>
+            <li><a class="dropdown-item" href="{% url 'account_list' %}?state=needs">Needs assignment{% if unassigned_accounts %} <span class="badge text-bg-warning">{{ unassigned_accounts }}</span>{% endif %}</a></li>
+            {% if user.is_admin %}
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="{% url 'import_home' %}">Upload Data{% if draft_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a></li>
+            {% endif %}
+          </ul>
+        </li>
         {% endif %}
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle {% active 'server_' 'inventory_' %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-hdd-rack"></i> Servers{% if user.can_assign_accounts and unassigned_servers %} <span class="badge text-bg-warning">{{ unassigned_servers }}</span>{% endif %}{% if user.is_admin and draft_server_import %} <span class="badge text-bg-warning">draft</span>{% endif %}</a>

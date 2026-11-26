@@ -19,7 +19,9 @@ from accounts.permissions import (
     account_assigner_required, admin_required, can_view_app, response_recorder_required,
 )
 from core.models import AppSettings
-from servers.queries import module_open_counts
+from servers.queries import SERVER_SEVERITIES, module_open_counts, server_application_rows
+from servers.queries import environments as server_environments
+from servers.queries import scoped_summary as scoped_server_summary
 
 from . import assignment, contacts, followups, jobs, lifecycle
 from .columns import COLUMNS, SEVERITY_ORDER
@@ -32,7 +34,7 @@ from .notify import NotificationNotAllowed, stream_vulns_csv
 from .parsing import FileFormatError
 from .queries import (
     OPEN, REMEDIATED, VULN_STATUSES, application_rows, filter_vulns, followup_cutoff, iter_vulns, keyset_paginate,
-    match_count, not_seen_cutoff, overdue_q, paginate, scoped_apps, scoped_followups, scoped_notifications,
+    match_count, module_app_ids, not_seen_cutoff, overdue_q, paginate, scoped_apps, scoped_followups, scoped_notifications,
     scoped_summary, summary_environments, summary_totals, vulns_for_app,
 )
 
@@ -158,17 +160,42 @@ FOLLOWUP_FILTERS = [
 ]
 
 
+def _open_total(summary):
+    return int(summary.filter(status=OPEN).aggregate(n=Sum("total"))["n"] or 0)
+
+
+SERVER_APP_STATUSES = [s for s in APP_STATUSES if s[0] != "not_rescanned"]
+
+
 @login_required
 def app_list(request):
-    rows = application_rows(request.user, request.GET)
-    all_rows = application_rows(request.user, {})
+    tab = SERVERS if request.GET.get("tab") == SERVERS else CONTAINERS
+    module_ids = module_app_ids()
+    if tab == SERVERS:
+        rows = server_application_rows(request.user, request.GET, module_ids)
+        all_rows = server_application_rows(request.user, {}, module_ids)
+        filters = {
+            "statuses": SERVER_APP_STATUSES, "severities": SERVER_SEVERITIES,
+            "environments": server_environments(request.user),
+        }
+    else:
+        rows = application_rows(request.user, request.GET, module_ids)
+        all_rows = application_rows(request.user, {}, module_ids)
+        filters = {
+            "statuses": APP_STATUSES, "severities": SEVERITY_ORDER,
+            "environments": summary_environments(scoped_summary(request.user)),
+        }
     context = {
         **paginate(request, rows),
+        **filters,
+        "tab": tab,
+        "noun": "server" if tab == SERVERS else "container",
+        "tabs": [
+            (CONTAINERS, "Containers", _open_total(scoped_summary(request.user).exclude(owner_app_id=""))),
+            (SERVERS, "Servers", _open_total(scoped_server_summary(request.user).exclude(app_id=""))),
+        ],
         "total_rows": len(rows),
-        "statuses": APP_STATUSES,
         "followup_filters": FOLLOWUP_FILTERS,
-        "severities": SEVERITY_ORDER,
-        "environments": summary_environments(scoped_summary(request.user)),
         "unregistered_count": sum(1 for r in all_rows if not r["registered"]),
         "params": request.GET,
     }

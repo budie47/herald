@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load herald_tags %}
+{% load herald_tags humanize %}
 {% block title %}Applications{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -7,14 +7,19 @@
   {% if user.is_admin %}<div class="d-flex gap-2"><a class="btn btn-outline-secondary btn-sm" href="{% url 'app_contacts' %}"><i class="bi bi-upload"></i> Import contacts</a><a class="btn btn-primary btn-sm" href="{% url 'app_create' %}"><i class="bi bi-plus-lg"></i> Add application</a></div>{% endif %}
 </div>
 
+<ul class="nav nav-tabs mb-3">
+  {% for value, label, n in tabs %}<li class="nav-item"><a class="nav-link {% if tab == value %}active{% endif %}" href="{% url 'app_list' %}{% if value == "servers" %}?tab=servers{% endif %}"><i class="bi {% if value == "servers" %}bi-hdd-rack{% else %}bi-box-seam{% endif %}"></i> {{ label }} <span class="badge text-bg-light border">{{ n|intcomma }} open</span></a></li>{% endfor %}
+</ul>
+
 {% if unregistered_count and user.can_view_all and params.status != "unregistered" %}
 <div class="alert alert-warning py-2 small">
   <i class="bi bi-person-exclamation"></i> {{ unregistered_count }} App ID{{ unregistered_count|pluralize }} {{ unregistered_count|pluralize:"has,have" }} no owner or support contact yet.
-  <a href="?status=unregistered">Show them</a>
+  <a href="{% qs status="unregistered" page=None %}">Show them</a>
 </div>
 {% endif %}
 
 <form method="get" class="card mb-3"><div class="card-body py-2">
+  {% if tab == "servers" %}<input type="hidden" name="tab" value="servers">{% endif %}
   <div class="row g-2 align-items-end">
     <div class="col-md-3"><label class="form-label small mb-0">Search</label>
       <input type="search" name="q" value="{{ params.q }}" class="form-control form-control-sm" placeholder="App ID, name, owner, email, service, department"></div>
@@ -24,18 +29,20 @@
       <select name="severity" class="form-select form-select-sm"><option value="">Any</option>{% for s in severities %}<option {% if params.severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-1"><label class="form-label small mb-0">SLO</label>
       <select name="slo" class="form-select form-select-sm"><option value="">Any</option><option value="past" {% if params.slo == "past" %}selected{% endif %}>Past SLO</option><option value="none" {% if params.slo == "none" %}selected{% endif %}>None past SLO</option></select></div>
+    {% if tab == "servers" %}<div class="col-6 col-md-1"><label class="form-label small mb-0">CISA KEV</label>
+      <select name="kev" class="form-select form-select-sm"><option value="">Any</option><option value="yes" {% if params.kev == "yes" %}selected{% endif %}>With KEV</option></select></div>{% endif %}
     <div class="col-6 col-md-1"><label class="form-label small mb-0">Notified</label>
       <select name="notified" class="form-select form-select-sm"><option value="">Any</option><option value="yes" {% if params.notified == "yes" %}selected{% endif %}>Notified</option><option value="never" {% if params.notified == "never" %}selected{% endif %}>Never</option></select></div>
     <div class="col-6 col-md-2"><label class="form-label small mb-0">Follow-up</label>
       <select name="followup" class="form-select form-select-sm">{% for v, l in followup_filters %}<option value="{{ v }}" {% if params.followup == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
     <div class="col-6 col-md-1"><label class="form-label small mb-0">Environment</label>
       <select name="env" class="form-select form-select-sm"><option value="">All</option>{% for e in environments %}<option {% if params.env == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
-    <div class="col-6 col-md-1"><label class="form-label small mb-0">Exception</label>
-      <select name="exception" class="form-select form-select-sm"><option value="">All</option><option value="yes" {% if params.exception == "yes" %}selected{% endif %}>With exception</option><option value="no" {% if params.exception == "no" %}selected{% endif %}>Without</option></select></div>
+    {% if tab != "servers" %}<div class="col-6 col-md-1"><label class="form-label small mb-0">Exception</label>
+      <select name="exception" class="form-select form-select-sm"><option value="">All</option><option value="yes" {% if params.exception == "yes" %}selected{% endif %}>With exception</option><option value="no" {% if params.exception == "no" %}selected{% endif %}>Without</option></select></div>{% endif %}
     <input type="hidden" name="per_page" value="{{ per_page }}">
-    <div class="col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'app_list' %}">Reset</a></div>
+    <div class="col-md-2 d-flex gap-1"><button class="btn btn-sm btn-dark">Apply</button><a class="btn btn-sm btn-outline-secondary" href="{% url 'app_list' %}{% if tab == "servers" %}?tab=servers{% endif %}">Reset</a></div>
   </div>
-  {% if params.env or params.exception %}<div class="small text-muted mt-1">Environment / exception filters narrow which vulnerabilities are counted (shown as “counted of total open”).</div>{% endif %}
+  {% if params.env or params.exception %}<div class="small text-muted mt-1">{% if tab == "servers" %}The environment filter narrows which servers and vulnerabilities are counted{% else %}Environment / exception filters narrow which vulnerabilities are counted{% endif %} (shown as “counted of total open”).</div>{% endif %}
 </div></form>
 
 <form method="post" action="{% url 'app_notify_bulk' %}" id="bulk-form">{% csrf_token %}
@@ -43,8 +50,8 @@
 <div class="card"><div class="card-body">
   {% if user.is_admin %}
   <div class="d-flex align-items-center gap-2 mb-2">
-    <select name="module" class="form-select form-select-sm w-auto" aria-label="Which vulnerabilities to send"><option value="containers">Container vulnerabilities</option><option value="servers">Server vulnerabilities</option></select>
-    <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send to the support teams of the selected applications? Apps with an open follow-up get a reminder.')"><i class="bi bi-envelope"></i> Send to support (<span id="bulk-count">0</span>)</button>
+    <input type="hidden" name="module" value="{{ tab }}">
+    <button class="btn btn-sm btn-outline-primary" id="bulk-btn" disabled onclick="return confirm('Send {{ noun }} vulnerabilities to the support teams of the selected applications? Apps with an open {{ noun }} follow-up get a reminder.')"><i class="bi bi-envelope"></i> Send {{ noun }} vulnerabilities to support (<span id="bulk-count">0</span>)</button>
     <input type="text" name="remark" class="form-control form-control-sm w-auto flex-grow-1" style="max-width: 340px" placeholder="Optional remark" aria-label="Optional remark">
     <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="include_in_email" id="bulk-include"><label class="form-check-label" for="bulk-include">Include in email</label></div>
     <span class="small text-muted">Only registered apps with a team email can be selected.</span>
@@ -55,13 +62,18 @@
     <thead><tr>
       {% if user.is_admin %}<th><input type="checkbox" class="form-check-input" id="check-all"></th>{% endif %}
       <th>App ID</th><th>Name</th><th>Owner</th><th>Service / Department</th>
-      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th><th class="text-end" title="Open server vulnerabilities">Servers</th><th>Follow-up</th><th>Last notified</th><th></th>
+      {% if tab == "servers" %}
+      <th class="text-end" title="Servers with open vulnerabilities, of all servers with this App ID">Servers</th><th class="text-end">Open</th><th>Critical / High</th><th class="text-end">KEV</th><th class="text-end">Past SLO</th><th class="text-end">Remediated</th>
+      {% else %}
+      <th class="text-end">Open</th><th>Critical / High / Medium / Low</th><th class="text-end">Past SLO</th><th class="text-end">Not seen</th><th class="text-end">Remediated</th>
+      {% endif %}
+      <th>Follow-up</th><th>Last notified</th><th></th>
     </tr></thead>
     <tbody>
     {% for row in page %}
       <tr>
         {% url 'app_detail' row.app_id as app_href %}{% if user.is_admin %}<td>{% if row.has_email and app_href %}<input type="checkbox" class="form-check-input row-check" name="app_ids" value="{{ row.app_id }}">{% endif %}</td>{% endif %}
-        <td class="nowrap">{% if app_href %}<a href="{{ app_href }}">{{ row.app_id }}</a>{% else %}<span title="This ID contains '/', so it has no page. Correct it in the scan data.">{{ row.app_id }}</span>{% endif %}</td>
+        <td class="nowrap">{% if app_href %}<a href="{% if tab == "servers" %}{% url 'app_servers' row.app_id %}{% else %}{{ app_href }}{% endif %}">{{ row.app_id }}</a>{% else %}<span title="This ID contains '/', so it has no page. Correct it in the scan data.">{{ row.app_id }}</span>{% endif %}</td>
         {% if row.in_catalog %}
           <td>{{ row.app.name|default:"—" }}{% if row.app.scan_conflict %} <span class="badge text-bg-light border" title="The scan data has more than one name for this App ID">name differs</span>{% endif %}</td>
           <td>{{ row.app.owner_name|default:"" }}<div class="small text-muted">{{ row.app.owner_email|default:"" }}{% if not row.has_email %}<span class="badge text-bg-warning">no team email</span>{% if user.is_admin and app_href %} <a class="small" href="{% url 'app_edit' row.app_id %}">Add contacts</a>{% endif %}{% endif %}</div></td>
@@ -70,22 +82,31 @@
           <td colspan="3"><span class="badge text-bg-warning">unregistered</span>
             {% if user.is_admin and app_href %}<a class="btn btn-sm btn-outline-warning ms-2 py-0" href="{% url 'app_create' %}?app_id={{ row.app_id|urlencode }}"><i class="bi bi-person-plus"></i> Register owner</a>{% endif %}</td>
         {% endif %}
+        {% if tab == "servers" %}
+        <td class="text-end nowrap">{% if row.servers and app_href %}<a href="{% url 'app_servers' row.app_id %}">{{ row.servers_open|intcomma }} <span class="small text-muted">of {{ row.servers|intcomma }}</span></a>{% else %}{{ row.servers|default:"—" }}{% endif %}</td>
+        <td class="text-end fw-semibold nowrap">{{ row.open|intcomma }}{% if row.narrowed %} <span class="small text-muted fw-normal">of {{ row.total_open|intcomma }}</span>{% endif %}</td>
+        <td class="nowrap"><span class="sev sev-critical">{{ row.critical }}</span> <span class="sev sev-high">{{ row.high }}</span></td>
+        <td class="text-end {% if row.kev %}text-danger fw-semibold{% endif %}">{{ row.kev }}</td>
+        <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
+        <td class="text-end text-success">{{ row.remediated }}</td>
+        {% else %}
         <td class="text-end fw-semibold nowrap">{{ row.open }}{% if row.narrowed %} <span class="small text-muted fw-normal">of {{ row.total_open }}</span>{% endif %}</td>
         <td class="nowrap"><span class="sev sev-critical">{{ row.critical }}</span> <span class="sev sev-high">{{ row.high }}</span> <span class="sev sev-medium">{{ row.medium }}</span> <span class="sev sev-low">{{ row.low }}</span></td>
         <td class="text-end {% if row.past_slo %}text-overdue{% endif %}">{{ row.past_slo }}</td>
         <td class="text-end {% if row.not_seen %}text-warning fw-semibold{% endif %}">{{ row.not_seen }}</td>
         <td class="text-end text-success">{{ row.remediated }}</td>
-        <td class="text-end">{% if row.server_open and app_href %}<a href="{% url 'app_servers' row.app_id %}">{{ row.server_open }}</a>{% else %}{{ row.server_open|default:"—" }}{% endif %}</td>
+        {% endif %}
         <td class="nowrap">{% if row.followup %}<span class="badge {{ row.followup.status|followup_class }}">{{ row.followup.get_status_display }}</span>{% if row.followup_overdue %} <span class="badge text-bg-warning">Overdue</span>{% endif %}{% else %}<span class="text-muted small">—</span>{% endif %}</td>
         <td class="small nowrap">{{ row.last_notified|date:"Y-m-d H:i"|default:"never" }}</td>
         <td class="text-end nowrap">
           {% if user.is_admin and row.in_catalog and app_href %}
-            <button class="btn btn-sm btn-outline-secondary py-0" formaction="{% url 'app_notify' row.app_id %}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No support email{% elif not row.open %}No open vulnerabilities{% elif row.followup %}Send reminder{% else %}Send to support{% endif %}" onclick="return confirm('{% if row.followup %}Send a reminder{% else %}Send to support{% endif %} for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
+            {% if tab == "servers" %}{% url 'app_servers_notify' row.app_id as notify_href %}{% else %}{% url 'app_notify' row.app_id as notify_href %}{% endif %}
+            <button class="btn btn-sm btn-outline-secondary py-0" formaction="{{ notify_href }}" {% if not row.has_email or not row.open %}disabled{% endif %} title="{% if not row.has_email %}No support email{% elif not row.open %}No open {{ noun }} vulnerabilities{% elif row.followup %}Send {{ noun }} reminder{% else %}Send {{ noun }} vulnerabilities to support{% endif %}" onclick="return confirm('{% if row.followup %}Send a {{ noun }} reminder{% else %}Send {{ noun }} vulnerabilities to support{% endif %} for {{ row.app_id }}?')"><i class="bi bi-envelope"></i></button>
           {% endif %}
         </td>
       </tr>
     {% empty %}
-      <tr><td colspan="14" class="text-muted">No applications match these filters.</td></tr>
+      <tr><td colspan="14" class="text-muted">No applications {% if tab == "servers" %}with servers {% endif %}match these filters.</td></tr>
     {% endfor %}
     </tbody>
   </table>

@@ -286,8 +286,108 @@ def summary_environments(summary):
 # --- applications list ------------------------------------------------------------------
 
 
-def application_rows(user, params):
-    """One row per App ID in the catalog or scan data, with precomputed counts, filtered per params."""
+def module_app_ids():
+    """App IDs with data in each module. A catalog app with neither is listed under both tabs."""
+    from servers.models import Server, ServerSummary
+
+    containers = set(AlertSummary.objects.exclude(owner_app_id="").values_list("owner_app_id", flat=True).distinct())
+    servers = set(Server.objects.exclude(app_id="").values_list("app_id", flat=True).distinct())
+    servers |= set(ServerSummary.objects.exclude(app_id="").values_list("app_id", flat=True).distinct())
+    return containers, servers
+
+
+def tab_app_ids(apps, own_ids, containers, servers):
+    """The App IDs one tab lists: its own data, plus catalog apps with no data in either module."""
+    return own_ids | {app_id for app_id in apps if app_id not in containers and app_id not in servers}
+
+
+def app_rows(user, module, app_ids, apps, stats, count_keys, narrowed=False):
+    """One row per App ID with a module's counts, contacts, last notification and open follow-up."""
+    last_notified = {
+        r["app_id"]: r["last"]
+        for r in scoped_notifications(user, module).filter(status=Notification.SENT).values("app_id")
+        .annotate(last=Max("sent_at"))
+    }
+    cutoff = followup_cutoff()
+    open_followups = {
+        f.application.app_id: f
+        for f in scoped_followups(user, module).exclude(status=FollowUp.CLOSED).select_related("application")
+    }
+    rows = []
+    for app_id in sorted(app_ids):
+        app = apps.get(app_id)
+        counts = stats.get(app_id, {})
+        row = {key: int(counts.get(key) or 0) for key in count_keys}
+        row.update(
+            app_id=app_id,
+            app=app,
+            in_catalog=app is not None,
+            registered=bool(app and app.has_contacts),
+            has_email=bool(app and app.has_email),
+            last_notified=last_notified.get(app_id),
+            followup=open_followups.get(app_id),
+            followup_overdue=bool(app_id in open_followups and open_followups[app_id].is_overdue(cutoff)),
+            narrowed=narrowed,
+        )
+        rows.append(row)
+    return rows
+
+
+APP_ROW_STATUSES = {
+    "with_vulns": lambda r: r["open"] > 0,
+    "registered": lambda r: r["registered"],
+    "unregistered": lambda r: not r["registered"],
+    "no_email": lambda r: not r["has_email"],
+    "not_rescanned": lambda r: r.get("not_seen", 0) > 0,
+    "all_remediated": lambda r: r["open"] == 0 and r["remediated"] > 0,
+}
+
+
+def filter_app_rows(rows, params, severities):
+    """Applies the filters both application tabs share, then sorts by open count."""
+    q = (params.get("q") or "").strip().lower()
+    if q:
+        def matches(row):
+            app = row["app"]
+            fields = [row["app_id"]]
+            if app:
+                fields += [
+                    app.name, app.owner_name, app.owner_email, app.support_team, app.support_emails, app.extra_emails,
+                    app.business_service, app.department,
+                ]
+            return any(q in (f or "").lower() for f in fields)
+        rows = [r for r in rows if matches(r)]
+
+    status = params.get("status")
+    if status in APP_ROW_STATUSES:
+        rows = [r for r in rows if APP_ROW_STATUSES[status](r)]
+    if params.get("severity") in severities:
+        rows = [r for r in rows if r[params["severity"].lower()] > 0]
+    if params.get("slo") == "past":
+        rows = [r for r in rows if r["past_slo"] > 0]
+    elif params.get("slo") == "none":
+        rows = [r for r in rows if r["past_slo"] == 0]
+    if params.get("kev") == "yes":
+        rows = [r for r in rows if r.get("kev", 0) > 0]
+    if params.get("notified") == "yes":
+        rows = [r for r in rows if r["last_notified"]]
+    elif params.get("notified") == "never":
+        rows = [r for r in rows if not r["last_notified"]]
+
+    followup = params.get("followup")
+    if followup == "overdue":
+        rows = [r for r in rows if r["followup_overdue"]]
+    elif followup == "none":
+        rows = [r for r in rows if not r["followup"]]
+    elif followup in (FollowUp.WAITING, FollowUp.RESPONDED, FollowUp.ESCALATED):
+        rows = [r for r in rows if r["followup"] and r["followup"].status == followup]
+
+    rows.sort(key=lambda r: (-r["open"], r["app_id"]))
+    return rows
+
+
+def application_rows(user, params, module_ids=None):
+    """The Containers tab: one row per App ID with container data, with precomputed counts, filtered per params."""
     summary = scoped_summary(user).exclude(owner_app_id="")
     counted = summary
     narrowed = bool(params.get("env") or params.get("exception"))
@@ -310,86 +410,10 @@ def application_rows(user, params):
     totals = dict(summary.filter(status=OPEN).values_list("owner_app_id").annotate(n=Sum("total")))
     seen_ids = set(summary.values_list("owner_app_id", flat=True).distinct())
     apps = {a.app_id: a for a in scoped_apps(user)}
-    last_notified = {
-        r["app_id"]: r["last"]
-        for r in scoped_notifications(user, CONTAINERS).filter(status=Notification.SENT).values("app_id")
-        .annotate(last=Max("sent_at"))
-    }
-
-    from servers.models import ServerSummary  # server counts are shown, never added to container counts
-
-    server_open = dict(
-        ServerSummary.objects.filter(status=OPEN).exclude(app_id="").values_list("app_id").annotate(n=Sum("total"))
-    )
-    cutoff = followup_cutoff()
-    open_followups = {
-        f.application.app_id: f
-        for f in scoped_followups(user, CONTAINERS).exclude(status=FollowUp.CLOSED).select_related("application")
-    }
+    containers, servers = module_ids or module_app_ids()
 
     count_keys = ["open", "past_slo", "not_seen", "remediated"] + [s.lower() for s in SEVERITY_ORDER]
-    rows = []
-    for app_id in sorted(set(apps) | seen_ids):
-        app = apps.get(app_id)
-        counts = stats.get(app_id, {})
-        row = {key: int(counts.get(key) or 0) for key in count_keys}
-        row.update(
-            app_id=app_id,
-            app=app,
-            in_catalog=app is not None,
-            registered=bool(app and app.has_contacts),
-            has_email=bool(app and app.has_email),
-            total_open=int(totals.get(app_id, 0)),
-            last_notified=last_notified.get(app_id),
-            server_open=int(server_open.get(app_id, 0)),
-            followup=open_followups.get(app_id),
-            followup_overdue=bool(app_id in open_followups and open_followups[app_id].is_overdue(cutoff)),
-            narrowed=narrowed,
-        )
-        rows.append(row)
-
-    q = (params.get("q") or "").strip().lower()
-    if q:
-        def matches(row):
-            app = row["app"]
-            fields = [row["app_id"]]
-            if app:
-                fields += [
-                    app.name, app.owner_name, app.owner_email, app.support_team, app.support_emails, app.extra_emails,
-                    app.business_service, app.department,
-                ]
-            return any(q in (f or "").lower() for f in fields)
-        rows = [r for r in rows if matches(r)]
-
-    status = params.get("status")
-    status_filters = {
-        "with_vulns": lambda r: r["open"] > 0,
-        "registered": lambda r: r["registered"],
-        "unregistered": lambda r: not r["registered"],
-        "no_email": lambda r: not r["has_email"],
-        "not_rescanned": lambda r: r["not_seen"] > 0,
-        "all_remediated": lambda r: r["open"] == 0 and r["remediated"] > 0,
-    }
-    if status in status_filters:
-        rows = [r for r in rows if status_filters[status](r)]
-    if params.get("severity") in SEVERITY_ORDER:
-        rows = [r for r in rows if r[params["severity"].lower()] > 0]
-    if params.get("slo") == "past":
-        rows = [r for r in rows if r["past_slo"] > 0]
-    elif params.get("slo") == "none":
-        rows = [r for r in rows if r["past_slo"] == 0]
-    if params.get("notified") == "yes":
-        rows = [r for r in rows if r["last_notified"]]
-    elif params.get("notified") == "never":
-        rows = [r for r in rows if not r["last_notified"]]
-
-    followup = params.get("followup")
-    if followup == "overdue":
-        rows = [r for r in rows if r["followup_overdue"]]
-    elif followup == "none":
-        rows = [r for r in rows if not r["followup"]]
-    elif followup in (FollowUp.WAITING, FollowUp.RESPONDED, FollowUp.ESCALATED):
-        rows = [r for r in rows if r["followup"] and r["followup"].status == followup]
-
-    rows.sort(key=lambda r: (-r["open"], r["app_id"]))
-    return rows
+    rows = app_rows(user, CONTAINERS, tab_app_ids(apps, seen_ids, containers, servers), apps, stats, count_keys, narrowed)
+    for row in rows:
+        row["total_open"] = int(totals.get(row["app_id"], 0))
+    return filter_app_rows(rows, params, SEVERITY_ORDER)
